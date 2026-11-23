@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Servers mockup</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,600&family=Space+Mono:wght@400;700&display=swap">
+<style>
+:root{--ground:#0b1a17;--sidebar:#081411;--panel:#10251f;--raised:#16332c;--well:#081411;--line:#2a4a3f;--line-soft:#1e3a32;--line-control:#3d6959;--text:#eaf4ec;--strong:#f4faf5;--muted:#a9c2b6;--faint:#7f9c8e;--accent:#9fe7c7;--on-accent:#06201a;--accent-bg:rgba(159,231,199,.10);--butter:#ffd27a;--peri:#b8c2ff;--failed:#ff9b85;--failed-bg:#20120f;--failed-line:#5a2f28;--shadow:0 18px 40px rgba(3,10,8,.28);--radius:22px 26px 20px 28px;--display:'Fraunces',Georgia,serif;--body:'DM Sans',system-ui,sans-serif;--mono:'Space Mono',ui-monospace,Menlo,monospace;color-scheme:dark}
+:root[data-theme="light"]{--ground:#f4f1e8;--sidebar:#ece8dc;--panel:#fffdf7;--raised:#f1ede2;--well:#f1ede2;--line:#d8d1bd;--line-soft:#e6e0cf;--line-control:#b9b19a;--text:#2a2a24;--strong:#14140f;--muted:#5d5d50;--faint:#807f70;--accent:#17704c;--on-accent:#fff;--accent-bg:rgba(23,112,76,.08);--butter:#a86a00;--peri:#4c5bc9;--failed:#b4402a;--failed-bg:#fbeeea;--failed-line:#e8b9ae;--shadow:0 18px 40px rgba(60,50,20,.12);color-scheme:light}
+*{box-sizing:border-box}body{margin:0;background:var(--ground);color:var(--text);font:14px/1.55 var(--body)}
+a{color:var(--accent);text-decoration:none}
+.top{display:flex;align-items:center;gap:14px;padding:12px 24px;border-bottom:1px solid var(--line-soft);background:var(--sidebar)}
+.top b{font-family:var(--display);font-size:17px;color:var(--strong)}.top .sp{flex:1}
+.top nav{display:flex;gap:4px}.top nav a{color:var(--muted);padding:5px 11px;border-radius:9px}.top nav a.on{background:var(--accent-bg);color:var(--accent)}
+.note{font-size:12px;color:var(--faint)}
+.mock{background:var(--butter);color:#2a1d00;font:700 11px var(--mono);padding:3px 8px;border-radius:6px;letter-spacing:.08em}
+.wrap{max-width:1080px;margin:0 auto;padding:26px 24px 80px}
+h1{font:600 26px var(--display);color:var(--strong);margin:0}
+.crumb{color:var(--faint);font-size:12.5px;margin-bottom:10px}
+.head{display:flex;align-items:flex-start;gap:14px;margin-bottom:6px}.head .sp{flex:1}
+.chips{display:flex;flex-wrap:wrap;gap:8px 16px;color:var(--muted);font-size:13px;margin:8px 0 18px}
+.chips span{display:inline-flex;gap:6px;align-items:center}.chips i{font-style:normal;color:var(--faint)}
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line-soft);margin-bottom:24px;overflow-x:auto}
+.tabs a{padding:9px 14px;color:var(--muted);border-bottom:2px solid transparent;white-space:nowrap}.tabs a.on{color:var(--strong);border-color:var(--accent)}
+.btn{font:500 13px var(--body);border:1px solid var(--line-control);background:transparent;color:var(--text);padding:6px 13px;border-radius:10px;cursor:pointer}
+.btn.p{background:var(--accent);color:var(--on-accent);border-color:var(--accent);font-weight:700}.btn.d{color:var(--failed);border-color:var(--failed-line)}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--accent);display:inline-block}.dot.w{background:var(--butter)}.dot.f{background:var(--failed)}
+.mono{font-family:var(--mono)}
+table{width:100%;border-collapse:collapse}th{text-align:left;font:400 11px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--faint);padding:12px 16px;border-bottom:1px solid var(--line-soft)}
+td{padding:14px 16px;border-bottom:1px solid var(--line-soft);vertical-align:middle}tr:last-child td{border:0}tr.row{cursor:pointer}tr.grp td{background:var(--raised);padding:9px 16px;font-size:13px}tr.member td:first-child{padding-left:34px}tr.row:hover td{background:var(--accent-bg)}
+.sub{color:var(--faint);font-size:12.5px}
+.spark{width:90px;height:24px}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}@media(max-width:760px){.grid{grid-template-columns:1fr}}
+.card{padding:0;overflow:hidden;cursor:pointer;transition:border-color .15s}.card:hover{border-color:var(--line-control)}
+.card h3{margin:0;padding:14px 18px;font:600 14.5px var(--body);color:var(--strong);display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--line-soft)}
+.card h3 small{font:400 11px var(--mono);color:var(--faint);letter-spacing:.1em}
+.kv{display:flex;justify-content:space-between;gap:12px;padding:9px 18px;border-bottom:1px solid var(--line-soft);font-size:13px}.kv:last-child{border:0}.kv span:first-child{color:var(--muted)}
+.on-t{color:var(--accent)}.off-t{color:var(--faint)}.warn-t{color:var(--butter)}
+.range{margin-left:auto;font:13px var(--body);background:var(--panel);color:var(--text);border:1px solid var(--line-control);border-radius:10px;padding:6px 10px}
+.chart{padding:16px 18px}.chart h4{margin:0 0 8px;display:flex;justify-content:space-between;font:500 13px var(--body);color:var(--strong)}.chart h4 span{color:var(--faint);font-weight:400}
+.side{display:grid;grid-template-columns:190px 1fr;gap:28px}@media(max-width:760px){.side{grid-template-columns:1fr}}
+.side nav{display:flex;flex-direction:column;gap:2px}.side nav b{font:400 11px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--faint);margin:14px 10px 4px}.side nav b:first-child{margin-top:0}
+.side nav a{color:var(--muted);padding:7px 10px;border-radius:9px}.side nav a.on{background:var(--raised);color:var(--strong)}
+.set{display:flex;justify-content:space-between;align-items:center;gap:18px;padding:16px 18px;border-bottom:1px solid var(--line-soft)}.set:last-child{border:0}
+.set p{margin:0}.set .t{color:var(--strong);font-weight:600}.set .d{color:var(--faint);font-size:12.5px;max-width:460px}
+input.f,select.f{background:var(--well);color:var(--text);border:1px solid var(--line-control);border-radius:10px;padding:7px 11px;font:13px var(--mono);min-width:200px}
+.sw{width:36px;height:20px;border-radius:12px;background:var(--line-control);position:relative;flex:none}.sw::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:var(--text)}.sw.on{background:var(--accent)}.sw.on::after{left:18px;background:var(--on-accent)}
+.danger{border-color:var(--failed-line);background:var(--failed-bg)}
+.badge{font:400 11px var(--mono);padding:2px 8px;border:1px solid var(--line-control);border-radius:20px;color:var(--muted)}
+.opline{display:flex;gap:12px;padding:11px 18px;border-bottom:1px solid var(--line-soft);font-size:13px}.opline:last-child{border:0}.opline .mono{color:var(--strong)}.opline .sp{flex:1}
+.cursor{color:var(--accent)}
+.scrim{position:fixed;inset:0;background:rgba(3,10,8,.55);display:none;z-index:20}.scrim.show{display:block}
+.drawer{position:fixed;top:12px;right:12px;bottom:12px;width:min(480px,calc(100vw - 24px));background:var(--panel);border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow);z-index:21;display:none;flex-direction:column}
+.drawer.show{display:flex}.drawer header{padding:20px 22px 0}.drawer header h2{margin:0;font:600 19px var(--display);color:var(--strong)}.drawer header p{margin:2px 0 12px;color:var(--faint);font-size:13px}
+.drawer .tabs{margin:0;padding:0 14px}.drawer .body{padding:6px 22px;overflow:auto;flex:1}.drawer footer{display:flex;align-items:center;gap:10px;padding:14px 22px;border-top:1px solid var(--line-soft)}.drawer footer .sp{flex:1;color:var(--faint);font-size:12.5px}
+.field{padding:14px 0;border-bottom:1px solid var(--line-soft)}.field:last-child{border:0}.field label{display:block;color:var(--strong);font-weight:600;margin-bottom:2px}.field .d{color:var(--faint);font-size:12.5px;margin-bottom:8px}
+textarea.f{width:100%;background:var(--well);color:var(--text);border:1px solid var(--line-control);border-radius:10px;padding:8px 11px;font:12.5px var(--mono);min-height:72px}
+.ptab{}
+.drawer.full{inset:0;width:100%!important;max-width:none;border-radius:0;border:0}.drawer.full .body{display:flex;flex-direction:column}.drawer.full pre{flex:1;height:auto!important;border-radius:0}.drawer header .bar{display:flex;align-items:flex-start;gap:10px}.drawer header .bar>div{flex:1}
+.view{display:none}.view.show{display:block}
+.legend{display:flex;gap:14px;font-size:12px;color:var(--muted)}.legend i{display:inline-block;width:10px;height:3px;border-radius:2px;margin-right:5px;vertical-align:middle}
+</style></head><body>
+<div class="top"><b>unharbored</b><nav><a href="#" data-go="list" class="on">Servers</a><a href="#">Applications</a><a href="#">Services</a><a href="#">Activity</a><a href="#">Account</a></nav><span class="sp"></span><span class="mock">MOCKUP</span>
+<button class="btn" id="theme">Light / dark</button></div>
+
+<!-- ============ LIST ============ -->
+<div class="wrap view show" id="v-list">
+ <div class="head"><h1>Servers</h1><span class="sp"></span><button class="btn">Connect your own</button><button class="btn p" data-drawer="new">+ New server</button></div>
+ <p class="sub" style="margin:0 0 18px">Machines Unharbored runs your applications on. Click a row to open it.</p>
+ <div class="panel"><table>
+  <tr><th>Server</th><th>Provider · region</th><th>Size</th><th>CPU / memory · 1h</th><th>Apps</th><th>Agent</th><th></th></tr>
+  <tr class="grp"><td colspan="7"><b style="color:var(--strong)">▾ <a href="#" data-go="pool" style="color:var(--strong)">shop-pool</a></b> <span class="badge">autoscaling</span> <span class="sub">· application <a href="#">shop</a> · 3 of 2–5 servers · avg CPU 46% (target 60%) · DigitalOcean NYC3 · <a href="#" data-go="pool">open pool</a></span></td></tr>
+  <tr class="row member" data-go="server"><td><span class="dot"></span> <b style="color:var(--strong)">shop-pool-1</b><div class="sub">primary · connected 1d</div></td><td>DigitalOcean<div class="sub">NYC3</div></td><td class="mono">2 GB · 1 vCPU<div class="sub">$12/mo</div></td><td><span class="mono sub">52% · 47%</span></td><td>1</td><td class="mono">0.9.4</td><td>⋯</td></tr>
+  <tr class="row member" data-go="server"><td><span class="dot"></span> <b style="color:var(--strong)">shop-pool-2</b><div class="sub">connected 6h</div></td><td>DigitalOcean<div class="sub">NYC3</div></td><td class="mono">2 GB · 1 vCPU<div class="sub">$12/mo</div></td><td><span class="mono sub">44% · 45%</span></td><td>1</td><td class="mono">0.9.4</td><td>⋯</td></tr>
+  <tr class="row member" data-go="server"><td><span class="dot w"></span> <b style="color:var(--strong)">shop-pool-3</b><div class="sub warn-t">joining the balancer</div></td><td>DigitalOcean<div class="sub">NYC3</div></td><td class="mono">2 GB · 1 vCPU<div class="sub">$12/mo</div></td><td class="sub">starting</td><td>1</td><td class="mono">0.9.4</td><td>⋯</td></tr>
+  <tr class="grp"><td colspan="7"><b style="color:var(--strong)">▾ Single servers</b> <span class="sub">· not part of a pool</span></td></tr>
+  <tr class="row" data-go="server"><td><span class="dot"></span> <b style="color:var(--strong)">web-1</b><div class="sub">connected 3d</div></td><td>DigitalOcean<div class="sub">NYC3</div></td><td class="mono">2 GB · 1 vCPU<div class="sub">$12/mo</div></td>
+   <td><svg class="spark" viewBox="0 0 90 24"><polyline fill="none" stroke="var(--accent)" stroke-width="1.6" points="0,18 10,16 20,19 30,12 40,14 50,9 60,13 70,10 80,12 90,11"/><polyline fill="none" stroke="var(--peri)" stroke-width="1.6" points="0,14 15,14 30,13 45,13 60,12 75,12 90,11"/></svg> <span class="mono sub">12% · 41%</span></td><td>3</td><td class="mono">0.9.4</td><td>⋯</td></tr>
+  <tr class="row" data-go="server"><td><span class="dot"></span> <b style="color:var(--strong)">worker-1</b><div class="sub">connected 3d</div></td><td>Hetzner<div class="sub">fsn1</div></td><td class="mono">4 GB · 2 vCPU<div class="sub">€6/mo</div></td>
+   <td><svg class="spark" viewBox="0 0 90 24"><polyline fill="none" stroke="var(--accent)" stroke-width="1.6" points="0,20 15,18 30,10 45,6 60,8 75,14 90,12"/><polyline fill="none" stroke="var(--peri)" stroke-width="1.6" points="0,12 30,11 60,10 90,10"/></svg> <span class="mono sub">38% · 55%</span></td><td>1</td><td class="mono">0.9.4</td><td>⋯</td></tr>
+  <tr class="row" data-go="server"><td><span class="dot w"></span> <b style="color:var(--strong)">staging</b><div class="sub warn-t">agent update available</div></td><td>Vultr<div class="sub">ewr</div></td><td class="mono">1 GB · 1 vCPU<div class="sub">$6/mo</div></td>
+   <td><svg class="spark" viewBox="0 0 90 24"><polyline fill="none" stroke="var(--accent)" stroke-width="1.6" points="0,20 30,20 60,19 90,20"/></svg> <span class="mono sub">3% · 28%</span></td><td>2</td><td class="mono">0.9.1</td><td>⋯</td></tr>
+  <tr class="row" data-go="server"><td><span class="dot f"></span> <b style="color:var(--strong)">home-box</b><div class="sub" style="color:var(--failed)">not connected · last seen 2h ago</div></td><td>Your own (SSH)<div class="sub">—</div></td><td class="mono">—</td><td class="sub">no data</td><td>1</td><td class="mono">0.9.4</td><td>⋯</td></tr>
+ </table></div>
+ <p class="note" style="margin-top:14px">Servers in an autoscale pool are grouped under the pool; the rest sit under Single servers. With no pools the table has no group rows at all. Below the table, as today: <i>Disconnected servers still billed</i> and <i>Retained application data</i>, shown only when there is something in them.</p>
+</div>
+
+<!-- ============ SERVER ============ -->
+<div class="wrap view" id="v-server">
+ <div class="crumb"><a href="#" data-go="list">← All servers</a></div>
+ <div class="head"><div><h1><span class="dot"></span> web-1</h1></div><span class="sp"></span><button class="btn" data-drawer="console">Open console</button><button class="btn">⋯</button></div>
+ <div class="chips"><span><i>◎</i> DigitalOcean · NYC3</span><span><i>▭</i> 2 GB · 1 vCPU · 50 GB disk</span><span><i>#</i> <span class="mono">164.90.xxx.xxx</span></span><span>~$12/mo</span><span class="cursor">● connected 3d</span></div>
+ <div class="tabs" data-group="srv"><a data-tab="overview" class="on">Overview</a><a data-tab="metrics">Metrics</a><a>Logs</a><a data-tab="commands">Commands</a><a data-tab="access">Access</a><a data-tab="settings">Settings</a></div>
+
+ <div class="tab show" data-tabs="srv" id="t-overview">
+  <div class="grid">
+   <div class="panel card" data-drawer="compute"><h3>Compute <small>EDIT ›</small></h3>
+     <div class="kv"><span>Size</span><span class="mono">2 GB · 1 vCPU</span></div><div class="kv"><span>Disk</span><span class="mono">31% of 50 GB</span></div><div class="kv"><span>Memory</span><span class="mono">41%</span></div><div class="kv"><span>CPU</span><span class="mono">12%</span></div></div>
+   <div class="panel card" data-drawer="firewall"><h3>Firewall <small>EDIT ›</small></h3>
+     <div class="kv"><span>Status</span><span class="on-t">On</span></div><div class="kv"><span>SSH</span><span class="mono">2 addresses</span></div><div class="kv"><span>Web ports</span><span>anyone</span></div><div class="kv"><span>Tailscale</span><span class="off-t">not joined</span></div></div>
+   <div class="panel card"><h3>Applications <small>3</small></h3>
+     <div class="kv"><span><a href="#">shop</a></span><span class="sub">PHP 8.3 · deployed 2h ago</span></div><div class="kv"><span><a href="#">blog</a></span><span class="sub">static · deployed 4d ago</span></div><div class="kv"><span><a href="#">api</a></span><span class="sub">Go · deployed 1d ago</span></div></div>
+   <div class="panel card" data-drawer="software"><h3>Software <small>EDIT ›</small></h3>
+     <div class="kv"><span>PHP</span><span class="mono">8.3 · 8.4</span></div><div class="kv"><span>PostgreSQL</span><span class="on-t">installed</span></div><div class="kv"><span>Valkey</span><span class="off-t">not installed</span></div><div class="kv"><span>Containers</span><span class="off-t">not prepared</span></div></div>
+  </div>
+  <h3 style="margin:28px 0 10px;font:600 15px var(--body);color:var(--strong)">Recent activity on this server</h3>
+  <div class="panel"><div class="opline"><span class="dot"></span><span class="mono">deploy shop</span><span class="sp"></span><span class="sub">2h ago · matt</span></div><div class="opline"><span class="dot"></span><span class="mono">update PHP 8.3</span><span class="sp"></span><span class="sub">2d ago · matt</span></div><div class="opline"><span class="dot"></span><span class="mono">upgrade agent 0.9.4</span><span class="sp"></span><span class="sub">3d ago · system</span></div></div>
+ </div>
+
+ <div class="tab" data-tabs="srv" id="t-metrics">
+  <div class="head" style="margin-bottom:14px"><h3 style="margin:0;font:600 17px var(--body);color:var(--strong)">Metrics</h3><select class="range"><option>Last hour</option><option>Last day</option><option>Last 7 days</option></select></div>
+  <div class="panel"><div class="chart"><h4>CPU and memory <span class="legend"><span><i style="background:var(--accent)"></i>CPU 12%</span><span><i style="background:var(--peri)"></i>Memory 41%</span><span>peak 64%</span></span></h4>
+   <svg viewBox="0 0 700 150" width="100%" height="150" preserveAspectRatio="none"><g stroke="var(--line-soft)"><line x1="0" y1="10" x2="700" y2="10"/><line x1="0" y1="75" x2="700" y2="75"/><line x1="0" y1="140" x2="700" y2="140"/></g><polyline fill="none" stroke="var(--peri)" stroke-width="2" points="0,90 100,88 200,86 300,84 400,80 500,82 600,78 700,80"/><polyline fill="none" stroke="var(--accent)" stroke-width="2" points="0,120 60,115 120,125 180,95 240,100 300,60 360,110 420,105 480,70 540,108 600,112 700,118"/></svg></div>
+   <div style="display:grid;grid-template-columns:1fr 1fr;border-top:1px solid var(--line-soft)"><div class="chart" style="border-right:1px solid var(--line-soft)"><h4>Disk <span>31% · 34 GB free</span></h4><svg viewBox="0 0 300 70" width="100%" height="70" preserveAspectRatio="none"><polyline fill="none" stroke="var(--butter)" stroke-width="2" points="0,48 300,44"/></svg></div>
+   <div class="chart"><h4>Network <span>not collected yet</span></h4><div class="sub" style="padding:18px 0">The agent does not report network traffic today. Shown here once it does.</div></div></div></div>
+ </div>
+
+ <div class="tab" data-tabs="srv" id="t-commands">
+  <div class="head" style="margin-bottom:14px"><div><h3 style="margin:0;font:600 17px var(--body);color:var(--strong)">Commands</h3><span class="sub">Everything run on this server through the console or an operation.</span></div><span class="sp"></span><button class="btn p" data-drawer="console">Open console</button></div>
+  <div class="panel"><div class="opline"><span class="dot"></span><span class="mono">php artisan migrate --force</span><span class="sp"></span><span class="sub">shop · 2h ago · matt</span></div><div class="opline"><span class="dot f"></span><span class="mono">npm run build</span><span class="sp"></span><span class="sub">blog · 4d ago · deploy</span></div><div class="opline"><span class="dot"></span><span class="mono">systemctl restart nginx</span><span class="sp"></span><span class="sub">server · 5d ago · matt</span></div></div>
+ </div>
+
+ <div class="tab" data-tabs="srv" id="t-access">
+  <div class="side"><nav><b>Access</b><a class="on">Login &amp; keys</a><a>Firewall</a><a>Tailscale</a></nav><div>
+   <div class="panel"><div class="set"><div><p class="t">Login user</p><p class="d">The account your SSH keys log in as.</p></div><span class="mono">deploy</span></div>
+    <div class="set"><div><p class="t">Sudo password</p><p class="d">Revealed once, audited. Rotating makes the old one stop working.</p></div><div><button class="btn">Reveal</button> <button class="btn">Rotate</button></div></div>
+    <div class="set"><div><p class="t">Lock down login</p><p class="d">Turn off root and password login. Only SSH keys get in.</p></div><button class="btn">Lock down</button></div></div>
+   <h3 style="margin:24px 0 10px;font:600 15px var(--body);color:var(--strong)">SSH keys</h3>
+   <div class="panel"><div class="set"><div><p class="t">matt-laptop</p><p class="d mono">SHA256:Qx…9fA</p></div><span class="sw on"></span></div><div class="set"><div><p class="t">ci-deploy</p><p class="d mono">SHA256:7bE…c2K</p></div><span class="sw"></span></div></div></div></div>
+ </div>
+
+ <div class="tab" data-tabs="srv" id="t-settings">
+  <div class="side"><nav><b>Server</b><a class="on">General</a><a>Agent</a></nav><div>
+   <div class="panel"><div class="set"><div><p class="t">Server name</p><p class="d">Used to identify this server. Cannot change while applications run on it.</p></div><input class="f" value="web-1"></div>
+    <div class="set"><div><p class="t">Agent</p><p class="d">0.9.4 · up to date.</p></div><button class="btn">Upgrade agent</button></div>
+    <div class="set"><div><p class="t">Repair stack</p><p class="d">Re-apply the server stack. Steps already in place change nothing.</p></div><button class="btn">Repair</button></div></div>
+   <h3 style="margin:24px 0 10px;font:600 15px var(--body);color:var(--failed)">Danger</h3>
+   <div class="panel danger"><div class="set"><div><p class="t">Disconnect</p><p class="d">Uninstall the agent and revoke its certificate. The machine keeps running and billing.</p></div><button class="btn d">Disconnect</button></div>
+    <div class="set"><div><p class="t">Destroy server</p><p class="d">Deletes the Droplet at DigitalOcean and stops billing. Cannot be undone. Blocked while applications run on it.</p></div><button class="btn d" data-drawer="destroy">Destroy server</button></div></div></div></div>
+ </div>
+</div>
+
+
+<!-- ============ POOL ============ -->
+<div class="wrap view" id="v-pool">
+ <div class="crumb"><a href="#" data-go="list">← All servers</a></div>
+ <div class="head"><div><h1><span class="dot"></span> shop-pool</h1></div><span class="sp"></span><button class="btn" data-drawer="scaling">Scaling settings</button><button class="btn">⋯</button></div>
+ <div class="chips"><span><i>◎</i> DigitalOcean · NYC3</span><span><i>▭</i> 2 GB · 1 vCPU each</span><span><i>⇄</i> load balancer <span class="mono">shop-lb</span></span><span>~$36/mo now · up to $60</span><span>application <a href="#">shop</a></span><span class="badge">autoscaling</span></div>
+ <div class="tabs" data-group="pool"><a data-ptab="overview" class="on">Overview</a><a data-ptab="history">Scaling history</a><a data-ptab="metrics">Metrics</a><a>Logs</a></div>
+
+ <div class="ptab show" id="p-overview">
+  <div class="grid">
+   <div class="panel card" data-drawer="scaling"><h3>Scaling <small>EDIT ›</small></h3>
+     <div class="kv"><span>Servers</span><span class="mono">3 now · 2 to 5</span></div><div class="kv"><span>CPU target</span><span class="mono">60%</span></div><div class="kv"><span>Average CPU</span><span class="mono">46%</span></div><div class="kv"><span>Next action</span><span class="sub">none · cooldown ends in 3 min</span></div></div>
+   <div class="panel card" data-drawer="schedule"><h3>Busy hours <small>EDIT ›</small></h3>
+     <div class="kv"><span>Mon–Fri 14:00–22:00 UTC</span><span class="mono">at least 3</span></div><div class="kv"><span>Weekends</span><span class="off-t">no window</span></div></div>
+  </div>
+  <h3 style="margin:28px 0 10px;font:600 15px var(--body);color:var(--strong)">Servers in this pool</h3>
+  <div class="panel"><table>
+   <tr><th>Server</th><th>State</th><th>CPU / memory</th><th>In balancer</th><th>Added</th><th></th></tr>
+   <tr class="row" data-go="server"><td><b style="color:var(--strong)">shop-pool-1</b> <span class="badge">primary</span></td><td><span class="dot"></span> connected</td><td class="mono">52% · 47%</td><td>yes</td><td class="sub">12d ago</td><td>⋯</td></tr>
+   <tr class="row" data-go="server"><td><b style="color:var(--strong)">shop-pool-2</b></td><td><span class="dot"></span> connected</td><td class="mono">44% · 45%</td><td>yes</td><td class="sub">6h ago</td><td>⋯</td></tr>
+   <tr class="row" data-go="server"><td><b style="color:var(--strong)">shop-pool-3</b></td><td><span class="dot w"></span> joining</td><td class="sub">starting</td><td>not yet</td><td class="sub">4 min ago</td><td>⋯</td></tr>
+  </table></div>
+  <p class="note" style="margin:10px 0 0">A pool's servers cannot be destroyed or disconnected one by one; the scaler adds and removes them. The primary is never removed.</p>
+  <div class="panel danger" style="margin-top:28px"><div class="set"><div><p class="t">Stop autoscaling</p><p class="d">Keeps the servers it has now and stops adding or removing. The application becomes a normal multi-server application.</p></div><button class="btn d">Stop autoscaling</button></div></div>
+ </div>
+
+ <div class="ptab" id="p-history">
+  <div class="head" style="margin-bottom:14px"><h3 style="margin:0;font:600 17px var(--body);color:var(--strong)">Scaling history</h3></div>
+  <div class="panel">
+   <div class="opline"><span class="dot w"></span><span class="mono">added shop-pool-3</span><span class="sub">CPU over 60% for 5 min (avg 71%)</span><span class="sp"></span><span class="sub">4 min ago</span></div>
+   <div class="opline"><span class="dot"></span><span class="mono">added shop-pool-2</span><span class="sub">busy hours window: at least 3</span><span class="sp"></span><span class="sub">6h ago</span></div>
+   <div class="opline"><span class="dot"></span><span class="mono">removed shop-pool-4</span><span class="sub">CPU under 30% for 10 min · drained 60 s</span><span class="sp"></span><span class="sub">yesterday</span></div>
+   <div class="opline"><span class="dot f"></span><span class="mono">shop-pool-5 never joined</span><span class="sub">destroyed · 1 of 3 failures allowed</span><span class="sp"></span><span class="sub">3d ago</span></div>
+  </div>
+  <div class="panel" style="margin-top:16px;border-color:var(--failed-line);background:var(--failed-bg)"><div class="set"><div><p class="t" style="color:var(--failed)">Paused after 3 servers in a row failed to join</p><p class="d">Shown only when it has happened. Fix the cause, then resume.</p></div><button class="btn p">Resume</button></div></div>
+ </div>
+
+ <div class="ptab" id="p-metrics">
+  <div class="head" style="margin-bottom:14px"><h3 style="margin:0;font:600 17px var(--body);color:var(--strong)">Metrics</h3><select class="range"><option>Last hour</option><option>Last day</option><option>Last 7 days</option></select></div>
+  <div class="panel"><div class="chart"><h4>Average CPU against target <span class="legend"><span><i style="background:var(--accent)"></i>avg 46%</span><span><i style="background:var(--butter)"></i>target 60%</span></span></h4>
+   <svg viewBox="0 0 700 150" width="100%" height="150" preserveAspectRatio="none"><g stroke="var(--line-soft)"><line x1="0" y1="10" x2="700" y2="10"/><line x1="0" y1="75" x2="700" y2="75"/><line x1="0" y1="140" x2="700" y2="140"/></g><line x1="0" y1="52" x2="700" y2="52" stroke="var(--butter)" stroke-dasharray="5 5"/><polyline fill="none" stroke="var(--accent)" stroke-width="2" points="0,100 100,90 200,70 300,48 360,40 420,62 500,78 600,70 700,76"/></svg></div>
+   <div class="chart" style="border-top:1px solid var(--line-soft)"><h4>Servers <span>3 now · peak 4</span></h4>
+   <svg viewBox="0 0 700 60" width="100%" height="60" preserveAspectRatio="none"><polyline fill="none" stroke="var(--peri)" stroke-width="2" points="0,40 150,40 300,20 360,20 400,40 520,40 560,20 700,20"/></svg></div></div>
+ </div>
+</div>
+
+<!-- ============ DRAWERS ============ -->
+<div class="scrim" id="scrim"></div>
+
+<div class="drawer" id="d-compute"><header><h2>Compute</h2><p>The machine web-1 runs on.</p></header><div class="tabs"><a class="on">General</a><a>Disk</a></div>
+ <div class="body"><div class="field"><label>Size</label><div class="d">Resizing reboots the server. Applications are down for about a minute.</div><select class="f" style="width:100%"><option>2 GB · 1 vCPU — $12/mo (current)</option><option>4 GB · 2 vCPU — $24/mo</option><option>8 GB · 4 vCPU — $48/mo</option></select></div>
+ <div class="field"><label>Resize disk too</label><div class="d">Disk resizes cannot be undone.</div><span class="sw"></span></div></div>
+ <footer><span class="sp">Will cost up to $24/mo (now $12).</span><button class="btn" data-close>Cancel</button><button class="btn p">Update</button></footer></div>
+
+<div class="drawer" id="d-firewall"><header><h2>Firewall</h2><p>Rules are rebuilt from these lists each time.</p></header><div class="tabs"><a class="on">General</a><a>Tailscale</a></div>
+ <div class="body"><div class="field" style="display:flex;justify-content:space-between;align-items:center"><div><label>Turn the firewall on</label><div class="d" style="margin:0">Denies incoming except SSH and the web ports.</div></div><span class="sw on"></span></div>
+ <div class="field"><label>Who may use SSH</label><div class="d">One address or network per line.</div><textarea class="f">203.0.113.7
+198.51.100.0/24</textarea></div>
+ <div class="field"><label>Who may open the web ports (80, 443)</label><div class="d">Empty means anyone.</div><textarea class="f" placeholder="empty: anyone"></textarea></div></div>
+ <footer><span class="sp">Runs as an operation.</span><button class="btn" data-close>Cancel</button><button class="btn p">Apply</button></footer></div>
+
+<div class="drawer" id="d-software"><header><h2>Software</h2><p>What is installed on web-1.</p></header><div class="tabs"><a class="on">PHP</a><a>Services</a><a>Containers</a></div>
+ <div class="body"><div class="set" style="padding-left:0;padding-right:0"><div><p class="t">PHP 8.3</p><p class="d">Upload 64M · memory 256M · 12 workers</p></div><div><button class="btn">Settings</button> <button class="btn">Update</button></div></div>
+ <div class="set" style="padding-left:0;padding-right:0"><div><p class="t">PHP 8.4</p><p class="d">Installed.</p></div><div><button class="btn">Settings</button> <button class="btn">Update</button></div></div>
+ <div class="set" style="padding-left:0;padding-right:0"><div><p class="t">PHP 8.2</p><p class="d">Own FPM pool; other versions keep running.</p></div><button class="btn">Install</button></div></div>
+ <footer><span class="sp"></span><button class="btn" data-close>Close</button></footer></div>
+
+<div class="drawer" id="d-destroy"><header><h2>Destroy web-1</h2><p>This deletes the Droplet at DigitalOcean. It cannot be undone.</p></header>
+ <div class="body"><div class="field"><label>Type the server name to confirm</label><input class="f" style="width:100%" placeholder="web-1"></div></div>
+ <footer><span class="sp"></span><button class="btn" data-close>Cancel</button><button class="btn d" style="opacity:.6">Destroy server</button></footer></div>
+
+<div class="drawer" id="d-new"><header><h2>New server</h2><p>Created at a provider you have connected.</p></header>
+ <div class="body"><div class="field"><label>Name</label><input class="f" style="width:100%" placeholder="web-2"></div><div class="field"><label>Provider</label><select class="f" style="width:100%"><option>DigitalOcean</option><option>Hetzner</option><option>Vultr</option><option>Linode</option></select></div><div class="field"><label>Region</label><select class="f" style="width:100%"><option>NYC3</option></select></div><div class="field"><label>Size</label><select class="f" style="width:100%"><option>2 GB · 1 vCPU — $12/mo</option></select></div><div class="field"><label>SSH keys</label><div class="d">On by default: your “new servers” keys.</div><span class="sw on"></span> matt-laptop</div></div>
+ <footer><span class="sp">Will cost up to $12/mo.</span><button class="btn" data-close>Cancel</button><button class="btn p">Create server</button></footer></div>
+
+
+<div class="drawer" id="d-scaling"><header><h2>Scaling settings</h2><p>One scaler for every provider. It adds or removes one server at a time.</p></header><div class="tabs"><a class="on">General</a></div>
+ <div class="body"><div class="field"><label>Fewest servers</label><div class="d">Never fewer than this. Busy hours can raise it.</div><input class="f" value="2"></div>
+ <div class="field"><label>Most servers</label><input class="f" value="5"></div>
+ <div class="field"><label>CPU target</label><div class="d">Adds a server when CPU stays over this for 5 minutes; removes one when it stays under half for 10.</div><input class="f" value="60"></div></div>
+ <footer><span class="sp">Will cost up to $60/mo (now $36).</span><button class="btn" data-close>Cancel</button><button class="btn p">Update</button></footer></div>
+
+<div class="drawer" id="d-schedule"><header><h2>Busy hours</h2><p>Raise the minimum during set windows.</p></header><div class="tabs"><a class="on">Windows</a></div>
+ <div class="body"><div class="field"><label>Window 1</label><div class="d">Mon–Fri, UTC.</div><input class="f" value="14:00 – 22:00 · at least 3"> <button class="btn d">Remove</button></div><div class="field"><button class="btn">+ Add window</button></div></div>
+ <footer><span class="sp"></span><button class="btn" data-close>Cancel</button><button class="btn p">Update</button></footer></div>
+
+<div class="drawer" id="d-console" style="width:min(760px,calc(100vw - 24px))"><header><div class="bar"><div><h2>Console · web-1</h2><p>A shell through the agent. Audited; nothing typed is stored.</p></div><button class="btn" id="fullbtn" title="Cover the whole screen">⤢ Full screen</button></div></header>
+ <div class="body"><pre style="background:var(--well);border:1px solid var(--line);border-radius:12px;padding:14px;font:12.5px/1.6 var(--mono);color:var(--text);min-height:320px;height:calc(100vh - 220px);margin:10px 0">deploy@web-1:~$ <span class="cursor">▌</span></pre></div>
+ <footer><span class="sp"></span><button class="btn" data-close>Close</button></footer></div>
+
+<script>
+const $=(s,r=document)=>[...r.querySelectorAll(s)];
+function view(v){$('.view').forEach(e=>e.classList.toggle('show',e.id==='v-'+v));$('.top nav a').forEach(a=>a.classList.toggle('on',v==='list'&&a.dataset.go==='list'));scrollTo(0,0)}
+function ptab(t){$('.tabs[data-group=pool] a').forEach(a=>a.classList.toggle('on',a.dataset.ptab===t));$('.ptab').forEach(e=>e.style.display=e.id==='p-'+t?'':'none')}
+function tab(t){$('.tabs[data-group=srv] a').forEach(a=>a.classList.toggle('on',a.dataset.tab===t));$('.tab').forEach(e=>e.classList.toggle('show',e.id==='t-'+t))}
+function drawer(n){$('.drawer').forEach(e=>e.classList.toggle('show',e.id==='d-'+n));document.getElementById('scrim').classList.toggle('show',!!n)}
+document.addEventListener('click',e=>{
+ const g=e.target.closest('[data-go]');if(g){e.preventDefault();view(g.dataset.go);return}
+ const pt=e.target.closest('[data-ptab]');if(pt){ptab(pt.dataset.ptab);return}
+ const t=e.target.closest('[data-tab]');if(t){tab(t.dataset.tab);return}
+ const d=e.target.closest('[data-drawer]');if(d){drawer(d.dataset.drawer);return}
+ if(e.target.closest('[data-close]')||e.target.id==='scrim')drawer(null)});
+$('.tab').forEach(e=>{if(!e.classList.contains('show'))e.style.display='none'});$('.ptab').forEach(e=>{if(!e.classList.contains('show'))e.style.display='none'});
+new MutationObserver(()=>$('.tab').forEach(e=>e.style.display=e.classList.contains('show')?'':'none')).observe(document.body,{subtree:true,attributes:true,attributeFilter:['class']});
+document.getElementById('fullbtn').onclick=()=>{const d=document.getElementById('d-console');const f=d.classList.toggle('full');d.style.cssText=f?'position:fixed;inset:0;width:100vw;max-width:none;height:100vh;border-radius:0;border:0;z-index:30':'width:min(760px,calc(100vw - 24px))';document.getElementById('fullbtn').textContent=d.classList.contains('full')?'⤡ Narrow':'⤢ Full screen'};
+document.getElementById('theme').onclick=()=>{const r=document.documentElement;r.dataset.theme=r.dataset.theme==='light'?'dark':'light'};
+</script></body></html>

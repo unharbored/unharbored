@@ -1,0 +1,297 @@
+/*
+ * The console's stylesheet, built by Vite with Tailwind 4.
+ *
+ * The colours, fonts and light/dark themes are CSS variables (--ground, --panel,
+ * --accent ...) that change with the theme. @theme inline exposes them to Tailwind as
+ * utilities (bg-panel, text-muted, border-line, font-display ...), so markup is
+ * utilities and follows the theme for free. The few rules below the theme are what
+ * utilities cannot express: the page background, dialogs and toasts that
+ * /js/dialogs.js builds, and the theme toggle.
+ */
+@layer theme, base, components, utilities;
+
+@import 'tailwindcss/theme.css' layer(theme);
+@import 'tailwindcss/preflight.css' layer(base);
+@import 'tailwindcss/utilities.css' layer(utilities);
+
+@theme inline {
+    --color-ground: var(--ground);
+    --color-sidebar: var(--sidebar);
+    --color-panel: var(--panel);
+    --color-raised: var(--panel-raised);
+    --color-well: var(--well);
+    --color-idle: var(--idle);
+    --color-line: var(--line);
+    --color-line-soft: var(--line-soft);
+    --color-line-strong: var(--line-strong);
+    --color-line-control: var(--line-control);
+    --color-ink: var(--text);
+    --color-ink-strong: var(--text-strong);
+    --color-muted: var(--muted);
+    --color-faint: var(--faint);
+    --color-accent: var(--accent);
+    --color-accent-hover: var(--accent-hover);
+    --color-on-accent: var(--on-accent);
+    --color-accent-bg: var(--accent-bg);
+    --color-accent-line: var(--accent-line);
+    --color-butter: var(--butter);
+    --color-peri: var(--peri);
+    --color-running: var(--running);
+    --color-running-soft: var(--running-soft);
+    --color-running-bg: var(--running-bg);
+    --color-running-panel: var(--running-panel);
+    --color-running-line: var(--running-line);
+    --color-failed: var(--failed);
+    --color-failed-bg: var(--failed-bg);
+    --color-failed-line: var(--failed-line);
+    --font-display: var(--display);
+    --font-body: var(--body);
+    --font-mono: var(--mono);
+    --radius-panel: var(--radius-card);
+    --shadow-panel: var(--shadow-card);
+}
+
+@keyframes breathe {
+    0%, 100% { transform: scale(1); opacity: 1; }
+    50% { transform: scale(0.75); opacity: 0.6; }
+}
+
+/* GROUP 1 (shell): the theme toggle offers the theme that is not showing. Unlayered, so it beats the
+ * display utility on the buttons; it follows the cookie's data-theme, else the system setting. */
+:root[data-theme="light"] .theme-to-light, :root[data-theme="dark"] .theme-to-dark { display: none; }
+@media (prefers-color-scheme: light) { :root:not([data-theme]) .theme-to-light { display: none; } }
+@media not (prefers-color-scheme: light) { :root:not([data-theme]) .theme-to-dark { display: none; } }
+
+/* Base rules: the page, links, focus rings and form controls. Controls inside a <Field> (the `field`
+   marker class) and bare textareas and checkboxes are styled here so markup needs no classes on them. */
+@layer base {
+    html { -webkit-text-size-adjust: 100%; }
+    body { margin: 0; background: var(--ground); color: var(--text); font: 15px/1.6 var(--body); -webkit-font-smoothing: antialiased; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { color: var(--accent-hover); text-decoration: underline; text-underline-offset: 3px; }
+    ::selection { background: var(--butter); color: #0b1a17; }
+    :focus-visible { outline: 2px solid var(--butter); outline-offset: 2px; border-radius: 6px; }
+    input:focus, select:focus, textarea:focus { outline: 2px solid var(--butter); outline-offset: 1px; }
+    input[type=checkbox], input[type=radio] { accent-color: var(--butter); width: 17px; height: 17px; }
+    code, kbd, samp { font-family: var(--mono); }
+
+    .field input:not([type=checkbox]):not([type=radio]), .field select, .field textarea {
+        min-height: 44px; padding: 0 14px; border: 1px solid var(--line); border-radius: 12px;
+        background: var(--panel-raised); color: var(--text-strong); font: 14px var(--body);
+    }
+    .field select {
+        appearance: none; -webkit-appearance: none; padding-right: 38px; font: 12px var(--mono); cursor: pointer;
+        background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8' fill='none' stroke='%23a9c2b6' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M1 1.5 6 6.5l5-5'/%3E%3C/svg%3E");
+        background-repeat: no-repeat; background-position: right 14px center;
+    }
+    .field textarea { padding: 12px 14px; font: 13px/1.6 var(--mono); resize: vertical; }
+    .field input::placeholder, .field textarea::placeholder { color: var(--faint); }
+}
+
+/* The palette: dark by default, light by the toggle (data-theme) or the system setting. */
+/*
+ * The control plane console. A night-garden palette: deep green ink, mint
+ * for live, butter for running and accents, coral for trouble, periwinkle
+ * as a second series colour. Fraunces for headings, DM Sans for text,
+ * Space Mono for labels and machine values. Soft, slightly uneven corners.
+ *
+ * Token names are shared with inline styles in the components, so a role
+ * keeps its name (--accent is "live", --running is "in progress") even
+ * though its colour changed.
+ */
+:root {
+  --ground: #0b1a17;
+  --sidebar: #081411;
+  --panel: #10251f;
+  --panel-head: #10251f;
+  --panel-raised: #16332c;
+  --well: #081411;
+  --idle: #0c1e1a;
+  --line: #2a4a3f;
+  --line-soft: #1e3a32;
+  --line-strong: #2f5749;
+  --line-control: #3d6959;
+  --text: #eaf4ec;
+  --text-strong: #f4faf5;
+  --muted: #a9c2b6;
+  --faint: #7f9c8e;
+  --label: #a9c2b6;
+  --sep: #3d6959;
+  --accent: #9fe7c7;
+  --accent-hover: #baf3da;
+  --on-accent: #06201a;
+  --accent-bg: rgba(159, 231, 199, 0.10);
+  --accent-line: #3d6959;
+  --nav-active: rgba(159, 231, 199, 0.07);
+  --butter: #ffd27a;
+  --peri: #b8c2ff;
+  --running: #ffd27a;
+  --running-soft: #ffe2a8;
+  --running-dim: #c9a45c;
+  --running-bg: rgba(255, 210, 122, 0.10);
+  --running-panel: #1d2a1c;
+  --running-line: #6b5a2c;
+  --failed: #ff9b85;
+  --failed-bg: #20120f;
+  --failed-line: #5a2f28;
+  --neutral-bg: rgba(12, 30, 26, 0.6);
+  --nav-line: #1e3a32;
+  --nav-hover: rgba(159, 231, 199, 0.05);
+  --log-text: #cfe0d5;
+  --dots: rgba(159, 231, 199, 0.10);
+  --ring: rgba(255, 210, 122, 0.14);
+  --shadow-card: 0 18px 40px rgba(3, 10, 8, 0.28);
+  --radius-card: 22px 26px 20px 28px;
+  --display: 'Fraunces', Georgia, 'Times New Roman', serif;
+  --body: 'DM Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --mono: 'Space Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  color-scheme: dark;
+}
+
+/* Light: the same roles by day. Chosen with the toggle (a cookie the layout
+ * renders as data-theme), else followed from the system setting. The two
+ * blocks hold the same values. */
+:root[data-theme="light"] {
+  --ground: #f4f1e8;
+  --sidebar: #ece8dc;
+  --panel: #fffdf7;
+  --panel-head: #fffdf7;
+  --panel-raised: #f1ede2;
+  --well: #f1ede2;
+  --idle: #f6f3ea;
+  --line: #d6dccf;
+  --line-soft: #e4e7dc;
+  --line-strong: #c3cbbb;
+  --line-control: #a9b5a2;
+  --text: #1c2b25;
+  --text-strong: #0e1a15;
+  --muted: #4c5f55;
+  --faint: #66776d;
+  --label: #4c5f55;
+  --sep: #a9b5a2;
+  --accent: #17704c;
+  --accent-hover: #0f5a3c;
+  --on-accent: #ffffff;
+  --accent-bg: #e2f2e9;
+  --accent-line: #8fc9ad;
+  --nav-active: #e6efe6;
+  --butter: #a86a00;
+  --peri: #4c5bc9;
+  --running: #9a5b00;
+  --running-soft: #7a4800;
+  --running-dim: #8a6a3a;
+  --running-bg: #fff1d6;
+  --running-panel: #fff7e6;
+  --running-line: #e2be7e;
+  --failed: #b4402a;
+  --failed-bg: #fdece7;
+  --failed-line: #e8b0a3;
+  --neutral-bg: #f1ede2;
+  --nav-line: #dcdfd3;
+  --nav-hover: #ebe8dd;
+  --log-text: #22332b;
+  --dots: rgba(23, 112, 76, 0.10);
+  --ring: rgba(168, 106, 0, 0.14);
+  --shadow-card: 0 14px 34px rgba(40, 50, 40, 0.08);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    --ground: #f4f1e8;
+    --sidebar: #ece8dc;
+    --panel: #fffdf7;
+    --panel-head: #fffdf7;
+    --panel-raised: #f1ede2;
+    --well: #f1ede2;
+    --idle: #f6f3ea;
+    --line: #d6dccf;
+    --line-soft: #e4e7dc;
+    --line-strong: #c3cbbb;
+    --line-control: #a9b5a2;
+    --text: #1c2b25;
+    --text-strong: #0e1a15;
+    --muted: #4c5f55;
+    --faint: #66776d;
+    --label: #4c5f55;
+    --sep: #a9b5a2;
+    --accent: #17704c;
+    --accent-hover: #0f5a3c;
+    --on-accent: #ffffff;
+    --accent-bg: #e2f2e9;
+    --accent-line: #8fc9ad;
+    --nav-active: #e6efe6;
+    --butter: #a86a00;
+    --peri: #4c5bc9;
+    --running: #9a5b00;
+    --running-soft: #7a4800;
+    --running-dim: #8a6a3a;
+    --running-bg: #fff1d6;
+    --running-panel: #fff7e6;
+    --running-line: #e2be7e;
+    --failed: #b4402a;
+    --failed-bg: #fdece7;
+    --failed-line: #e8b0a3;
+    --neutral-bg: #f1ede2;
+    --nav-line: #dcdfd3;
+    --nav-hover: #ebe8dd;
+    --log-text: #22332b;
+    --dots: rgba(23, 112, 76, 0.10);
+    --ring: rgba(168, 106, 0, 0.14);
+    --shadow-card: 0 14px 34px rgba(40, 50, 40, 0.08);
+    color-scheme: light;
+  }
+}
+
+body { margin: 0; background: var(--ground); color: var(--text); font: 15px/1.6 var(--body); -webkit-font-smoothing: antialiased; }
+/* A dot grid and a faint orbit behind everything. */
+body::before { content: ''; position: fixed; inset: 0; z-index: -1; background-image: radial-gradient(var(--dots) 1px, transparent 1.2px); background-size: 30px 30px; opacity: 0.45; pointer-events: none; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+}
+@media (max-width: 640px) { input, select, textarea { font-size: 16px; } }
+
+/* The buttons /js/dialogs.js puts in its dialogs; everything else uses <Btn>. */
+@layer components {
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 42px; padding: 9px 16px; border: 1px solid var(--line); border-radius: 11px; background: var(--panel-raised); color: var(--text); font: 500 14px/1.2 var(--body); cursor: pointer; white-space: nowrap; transition: background-color 170ms ease, border-color 170ms ease, transform 120ms ease, color 170ms ease; }
+.btn:hover { text-decoration: none; background: color-mix(in srgb, var(--panel-raised) 80%, var(--accent)); border-color: var(--line-control); color: var(--text-strong); }
+.btn:active { transform: translateY(1px); }
+.btn-primary { border-color: var(--accent); background: var(--accent); color: var(--on-accent); font-weight: 600; }
+.btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: var(--on-accent); }
+.btn-small { min-height: 38px; padding: 7px 13px; font-size: 13px; }
+.btn-danger { background: var(--failed-bg); border-color: var(--failed-line); color: var(--failed); }
+.btn-danger:hover { background: color-mix(in srgb, var(--failed-bg) 85%, var(--failed)); border-color: var(--failed); color: var(--failed); }
+.btn[disabled], .btn[aria-disabled=true] { opacity: 0.55; cursor: not-allowed; transform: none; background: var(--panel-raised); border-color: var(--line-soft); color: var(--muted); }
+}
+
+/* Dialogs and messages, built by /js/dialogs.js. Same tokens as everything else, so light and
+ * dark both work. The card is a panel; a dangerous question gets the coral edge and button. */
+.dlg { margin: auto; border: 0; padding: 0; background: transparent; color: var(--text); max-width: calc(100vw - 32px); width: 440px; overflow: visible; }
+.dlg::backdrop { background: rgba(3, 10, 8, 0.62); backdrop-filter: blur(3px); animation: dlg-fade 160ms ease both; }
+.dlg-card { position: relative; margin: 0; padding: 24px 26px 22px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-card); box-shadow: var(--shadow-card), 0 0 0 6px var(--ring); display: flex; flex-direction: column; gap: 10px; animation: dlg-in 180ms cubic-bezier(.2, .8, .3, 1) both; }
+.dlg[data-tone=danger] .dlg-card { border-color: var(--failed-line); box-shadow: var(--shadow-card), 0 0 0 6px color-mix(in srgb, var(--failed) 12%, transparent); }
+.dlg-mark { width: 30px; height: 4px; border-radius: 4px; background: var(--accent); }
+.dlg[data-tone=danger] .dlg-mark { background: var(--failed); }
+.dlg[data-tone=warn] .dlg-mark { background: var(--running); }
+.dlg-title { margin: 6px 0 0; font: 600 21px/1.25 var(--display); color: var(--text-strong); }
+.dlg-msg { margin: 0; font: 14.5px/1.55 var(--body); color: var(--muted); white-space: pre-line; }
+.dlg-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+.dlg.leaving .dlg-card { animation: dlg-out 130ms ease both; }
+.dlg.leaving::backdrop { animation: dlg-fade 130ms ease reverse both; }
+@keyframes dlg-fade { from { opacity: 0; } }
+@keyframes dlg-in { from { opacity: 0; transform: translateY(10px) scale(.97); } }
+@keyframes dlg-out { to { opacity: 0; transform: translateY(6px) scale(.98); } }
+
+.toasts { position: fixed; z-index: 60; right: 20px; bottom: 20px; display: flex; flex-direction: column; gap: 10px; width: min(380px, calc(100vw - 32px)); pointer-events: none; }
+.toast { pointer-events: auto; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 13px 40px 13px 16px; position: relative; background: var(--panel-raised); border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 14px; box-shadow: var(--shadow-card); color: var(--text); font: 14px/1.45 var(--body); animation: toast-in 200ms cubic-bezier(.2, .8, .3, 1) both; }
+.toast[data-tone=ok] { border-left-color: var(--accent); }
+.toast[data-tone=warn] { border-left-color: var(--running); background: var(--running-panel); color: var(--running-soft); border-color: var(--running-line); }
+.toast[data-tone=danger] { border-left-color: var(--failed); background: var(--failed-bg); color: var(--text); border-color: var(--failed-line); }
+.toast-title { font: 700 11px var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); width: 100%; }
+.toast[data-tone=danger] .toast-title { color: var(--failed); }
+.toast-x { position: absolute; top: 6px; right: 8px; width: 28px; height: 28px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); font: 20px/1 var(--body); cursor: pointer; }
+.toast-x:hover { background: var(--nav-hover); color: var(--text); }
+.toast.leaving { animation: toast-out 160ms ease both; }
+@keyframes toast-in { from { opacity: 0; transform: translateY(12px); } }
+@keyframes toast-out { to { opacity: 0; transform: translateX(16px); } }
+@media (max-width: 460px) { .toasts { right: 16px; left: 16px; bottom: 16px; width: auto; } }
+.dlg [hidden] { display: none; }

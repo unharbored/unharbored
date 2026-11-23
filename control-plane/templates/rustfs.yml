@@ -1,0 +1,49 @@
+# RustFS: S3-compatible object storage.
+# Licence: Apache-2.0. Published at https://github.com/rustfs/rustfs/releases/tag/1.0.5
+schema: 1
+id: rustfs
+version: 1
+name: RustFS
+category: Storage
+description: S3-compatible object storage.
+memory: 1GB
+runtime: native
+licence: Apache-2.0
+source: https://github.com/rustfs/rustfs/releases/tag/1.0.5
+
+inputs:
+  - { key: name,    type: slug,   label: Name, help: "A short name for this service on the server, for example files. Lowercase letters, digits and dashes." }
+  - { key: s3_host, type: domain, label: S3 API domain, help: "The address your apps use to store and fetch files (the S3 endpoint). Point a DNS A record for it at this server first." }
+  - { key: ui_host, type: domain, label: Console domain, help: "The address of the web page where you manage buckets and keys. It also needs a DNS A record pointing at this server." }
+  - { key: storage, type: size,   label: Storage, default: 50GB, help: "How much disk to set aside, for example 20GB or 200GB. The server needs that much free, plus room to unpack." }
+  - { key: backup,  type: choice, label: Backups, options: [snapshot, spaces, none], default: snapshot, help: "snapshot: a nightly copy on this server's own disk (it does not protect against losing the server). spaces: also copied to your backup bucket. none: left out of the nightly backup." }
+
+secrets:
+  - { key: access_key, generate: word }
+  - { key: secret_key, generate: password }
+
+runs:
+  download: https://github.com/rustfs/rustfs/releases/download/1.0.5/rustfs-linux-x86_64-musl-v1.0.5.zip
+  sha256: "3d9d42bb4cb7a1589266090d4f9f8238465506cdd9d5e897193377dd6f610aac"
+  unpack: zip
+  binary: rustfs
+  user: cm-rustfs
+  data: /srv/cloud-manager/data/{{ name }}
+  command: "{{ binary }} --address 127.0.0.1:9000 --console-address 127.0.0.1:9001 {{ data }}"
+  env:
+    RUSTFS_ACCESS_KEY: "{{ secrets.access_key }}"
+    RUSTFS_SECRET_KEY: "{{ secrets.secret_key }}"
+  ports:
+    9000: "{{ inputs.s3_host }}"
+    9001: "{{ inputs.ui_host }}"
+  health: { port: 9000 }
+  limits: { memory: 1GB }
+
+proxy:
+  client_max_body_size: 0
+  request_buffering: off
+
+requires: [ role:manager ]
+
+# A copy taken while it runs may not restore cleanly (SQLite, an object store), so the nightly backup stops it for a moment.
+backup: { stop: true }

@@ -1,0 +1,59 @@
+# Gitea: self-hosted Git service (built-in SQLite, built-in SSH server on 2222).
+# Licence: MIT. Published at https://github.com/go-gitea/gitea/releases/tag/v28.4.0
+#
+# `setup: environment-to-ini` is a reviewed action (App\Lib\Services\SetupActions): once,
+# before the first start, it makes the GITEA__section__KEY variables below into app.ini. This
+# 28.4.0 binary has no `environment-to-ini` command (checked in its help text); the action runs
+# `gitea config edit-ini --config P --apply-env --out P` instead.
+# UNVERIFIED on a real server (the binary is linux-only and was only read, not run): that command
+# line, the built-in SSH on 2222, SQLite and the 127.0.0.1 bind. Not offered until it has been run for real. It also declares
+# an extra port (2222), which the native runner refuses until the console can show it for
+# approval (step 3).
+schema: 1
+id: gitea
+version: 1
+name: Gitea
+category: Development
+description: Git hosting with issues, pull requests and packages. Uses its built-in SQLite database.
+memory: 512MB
+runtime: native
+licence: MIT
+source: https://github.com/go-gitea/gitea/releases/tag/v28.4.0
+
+inputs:
+  - { key: name, type: slug,   label: Name, help: "A short name for this service on the server, for example files. Lowercase letters, digits and dashes." }
+  - { key: host, type: domain, label: Web address, help: "The address you will open it at. Point a DNS A record for it at this server first." }
+
+runs:
+  download: https://github.com/go-gitea/gitea/releases/download/v28.4.0/gitea-28.4.0-linux-amd64
+  sha256: "154e775bd6bb589fc14cd93a689d8fbc64090aaa3ec537f0e3af298b13c6d386"
+  unpack: none
+  binary: gitea-28.4.0-linux-amd64
+  user: cm-gitea
+  data: /srv/cloud-manager/data/{{ name }}
+  command: "{{ binary }} web --work-path {{ data }}"
+  setup: environment-to-ini
+  env:
+    GITEA_WORK_DIR: "{{ data }}"
+    GITEA__database__DB_TYPE: sqlite3
+    GITEA__security__INSTALL_LOCK: "true"
+    GITEA__server__HTTP_ADDR: 127.0.0.1
+    GITEA__server__HTTP_PORT: "3000"
+    GITEA__server__DOMAIN: "{{ inputs.host }}"
+    GITEA__server__SSH_DOMAIN: "{{ inputs.host }}"
+    GITEA__server__ROOT_URL: "https://{{ inputs.host }}/"
+    GITEA__server__START_SSH_SERVER: "true"
+    GITEA__server__SSH_PORT: "2222"
+    GITEA__server__SSH_LISTEN_PORT: "2222"
+  ports:
+    3000: "{{ inputs.host }}"
+  health: { port: 3000 }
+  limits: { memory: 1GB }
+
+proxy:
+  client_max_body_size: 512MB
+
+extra_ports:
+  - { port: 2222, proto: tcp, label: Git over SSH }
+
+requires: [ role:manager ]

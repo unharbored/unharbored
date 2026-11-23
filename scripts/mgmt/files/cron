@@ -1,0 +1,37 @@
+# Managed by scripts/mgmt/setup.sh.
+# Nightly database snapshot, 14 kept here and, once backup:offsite has run, 14 in a Spaces bucket in another region.
+17 3 * * * www-data cd /srv/cloud-manager/control-plane && /usr/bin/php8.4 artisan backup:database >> /var/lib/cloud-manager/backups/backup.log 2>&1
+# certbot renews on each site's primary; this puts renewed certificates on load balancers.
+41 4 * * * www-data cd /srv/cloud-manager/control-plane && /usr/bin/php8.4 artisan sites:sync-balancer-certificates >> /var/lib/cloud-manager/balancer-certificates.log 2>&1
+# GitHub never retries a webhook it failed to deliver; this asks it to.
+*/5 * * * * www-data cd /srv/cloud-manager/control-plane && /usr/bin/php8.4 artisan github:redeliver-failed >> /var/lib/cloud-manager/webhook-redelivery.log 2>&1
+# DigitalOcean removes autoscale pool members without telling anyone; this takes them off their sites.
+* * * * * www-data cd /srv/cloud-manager/control-plane && /usr/bin/php8.4 artisan sites:reconcile-pools >> /var/lib/cloud-manager/pools.log 2>&1
+# Each provider's regions and server sizes are read again once a day.
+29 5 * * * www-data cd /srv/cloud-manager/control-plane && /usr/bin/php8.4 artisan providers:refresh-catalogs >> /var/lib/cloud-manager/catalogs.log 2>&1
+# Base images for autoscale pools are rebuilt once a month old, so new members boot current packages.
+23 5 * * * www-data cd /srv/cloud-manager/control-plane && /usr/bin/php8.4 artisan images:refresh >> /var/lib/cloud-manager/images.log 2>&1
+# Queue workers follow each scaling site's queue, down to zero where allowed.
+* * * * * www-data cd /srv/cloud-manager/control-plane && /usr/bin/php8.4 artisan sites:scale-workers >> /var/lib/cloud-manager/workers.log 2>&1
+# Each deployed site's database, to the backup bucket; 14 days kept. Deploys take one before migrating, too.
+47 3 * * * www-data cd /srv/cloud-manager/control-plane && /usr/bin/php8.4 artisan sites:backup >> /var/lib/cloud-manager/site-backups.log 2>&1
+# Each template service's data (a folder or its Docker volumes), 14 days kept; the service's Backups setting decides: none, this server, or the backup bucket too.
+57 3 * * * www-data cd /srv/cloud-manager/control-plane && /usr/bin/php8.4 artisan services:backup >> /var/lib/cloud-manager/service-backups.log 2>&1
+# Server metrics are kept two weeks.
+13 4 * * * www-data cd /srv/cloud-manager/control-plane && /usr/bin/php8.4 artisan metrics:prune >> /var/lib/cloud-manager/metrics.log 2>&1
+# Servers offline, disks nearly full, CPUs pinned and failed operations, told to the webhook and email set on Alerts.
+* * * * * www-data cd /srv/cloud-manager/control-plane && /usr/bin/php8.4 artisan alerts:check >> /var/lib/cloud-manager/alerts.log 2>&1
+# Previews with no deploy within the days they keep for are deleted.
+53 4 * * * www-data cd /srv/cloud-manager/control-plane && /usr/bin/php8.4 artisan previews:sweep >> /var/lib/cloud-manager/previews.log 2>&1
+# Each provider key is asked whether it still works; Alerts reports a rejected, expired or soon-to-expire one.
+29 5 * * * www-data cd /srv/cloud-manager/control-plane && /usr/bin/php8.4 artisan provider-keys:verify >> /var/lib/cloud-manager/provider-keys.log 2>&1
+# A server's SSH login is kept only while the agent is installed; this deletes any left behind after an hour.
+*/15 * * * * www-data cd /srv/cloud-manager/control-plane && /usr/bin/php8.4 artisan ssh-adopt:sweep >> /var/lib/cloud-manager/ssh-adopt.log 2>&1
+# The autoscaler adds or removes one server per application from its servers' CPU.
+* * * * * www-data cd /srv/cloud-manager/control-plane && /usr/bin/php8.4 artisan sites:scale-servers >> /var/lib/cloud-manager/scaler.log 2>&1
+# Applications cloned from a public repository we cannot receive webhooks from are deployed when its branch has a new commit.
+*/5 * * * * www-data cd /srv/cloud-manager/control-plane && /usr/bin/php8.4 artisan sites:poll-git >> /var/lib/cloud-manager/poll-git.log 2>&1
+# Each Let's Encrypt certificate's end date is read again, so one certbot renewed on its own clears the expiry alert.
+17 6 * * * www-data cd /srv/cloud-manager/control-plane && /usr/bin/php8.4 artisan certificates:check >> /var/lib/cloud-manager/certificates.log 2>&1
+# Finished operations, resolved alerts and closed console sessions are kept 90 days. The audit log is never pruned.
+37 4 * * * www-data cd /srv/cloud-manager/control-plane && /usr/bin/php8.4 artisan history:prune >> /var/lib/cloud-manager/history.log 2>&1

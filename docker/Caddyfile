@@ -1,0 +1,29 @@
+# The console on a publicly trusted certificate (Caddy gets and renews it), and the
+# agent name on a certificate from the team's own CA, which agents pin.
+
+{$CP_HOST} {
+	root * /srv/cloud-manager/control-plane/public
+	header Strict-Transport-Security "max-age=31536000"
+
+	# The console's websocket transport. The trailing slash matters: a bare /app
+	# prefix would also swallow the console's /apps pages.
+	handle /app/* {
+		reverse_proxy reverb:9445
+	}
+	php_server
+}
+
+# Enrollment, the agent download and the gateway's events. Browsers will not trust
+# this certificate and nothing here is for them: only the API answers.
+{$AGENT_HOST} {$EXTRA_AGENT_NAMES} {
+	tls /var/lib/cloud-manager/certs/server.crt /var/lib/cloud-manager/certs/server.key
+	root * /srv/cloud-manager/control-plane/public
+
+	@api path /api/* /up
+	handle @api {
+		php_server
+	}
+	handle {
+		respond 404
+	}
+}

@@ -1,0 +1,15 @@
+# Managed by scripts/mgmt/setup.sh.
+[Unit]
+Description=cloud-manager session gateway
+After=network-online.target nginx.service
+
+[Service]
+ExecStart=/usr/local/bin/gateway -agent-addr 0.0.0.0:9443 -api-addr 127.0.0.1:9444 -cert-file /etc/cloud-manager/server.crt -key-file /etc/cloud-manager/server.key -token-file /etc/cloud-manager/gateway.token -events-url https://__AGENT_HOST__/api/gateway/events
+# The gateway keeps organisation CAs in memory only. Without this, every
+# restart refused every node until someone ran the sync by hand.
+ExecStartPost=/bin/sh -c "sleep 2; cd /srv/cloud-manager/control-plane && /usr/sbin/runuser -u www-data -- env HOME=/tmp php artisan gateway:sync-organisations"
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

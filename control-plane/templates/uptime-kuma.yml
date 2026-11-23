@@ -1,0 +1,38 @@
+# Uptime Kuma: self-hosted uptime monitoring.
+# Licence: MIT. Image louislam/uptime-kuma on Docker Hub, tag 2.5.11
+# (https://hub.docker.com/r/louislam/uptime-kuma); the digest is the multi-arch index digest
+# the registry returned for that tag.
+schema: 1
+id: uptime-kuma
+version: 1
+name: Uptime Kuma
+category: Monitoring
+description: Monitor websites and services and get told when they go down.
+memory: 512MB
+runtime: container
+licence: MIT
+source: https://hub.docker.com/r/louislam/uptime-kuma
+
+inputs:
+  - { key: name, type: slug,   label: Name, help: "A short name for this service on the server, for example files. Lowercase letters, digits and dashes." }
+  - { key: host, type: domain, label: Web address, help: "The address you will open it at. Point a DNS A record for it at this server first." }
+
+runs:
+  image: louislam/uptime-kuma:2.5.11@sha256:7554dba313c84e44fee921ef3b5626ba1c711e412e82815e8c957517026112a9
+  # Not read-only: Uptime Kuma writes outside its data volume (temporary files, its own upgrade checks). A read-only
+  # root filesystem is opt-in per template (read_only: true) until an image has been seen to run with it.
+  read_only: false
+  # Its entrypoint runs as root and needs to write the data volume; with every capability dropped that fails (EACCES, found on a
+  # real server). DAC_OVERRIDE is the one it needs: root may write files it does not own, nothing else is given back.
+  capabilities: [ DAC_OVERRIDE ]
+  volumes: [ "{{ name }}:/app/data" ]
+  ports:
+    3001: "{{ inputs.host }}"
+  env: {}
+  health: { port: 3001 }
+  limits: { memory: 512MB, cpu: 1 }
+
+requires: [ containers, role:manager ]
+
+# A copy of the running SQLite database may not restore cleanly, so the nightly backup stops it for a moment.
+backup: { stop: true }

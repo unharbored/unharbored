@@ -1,0 +1,119 @@
+# Unharbored's control plane in Docker: one host, one image, one service per process.
+#
+#   CP_HOST=cp.example.com AGENT_HOST=agent.example.com docker compose up -d --build
+#
+# or put those two lines in a .env file next to this one. Both names must point at this
+# host before the first start: Caddy gets the console's certificate then. The first
+# start writes the keys into the data volume. Copy VAULT_MASTER_KEY out of it:
+#
+#   docker compose exec web cat /var/lib/cloud-manager/.env
+#
+# Open ports: 80 and 443 (Caddy) and 9443 (agents). Nothing else is published: the
+# gateway's API (9444) can run root commands on every node and stays on the compose
+# network. See docs/self-hosting.md, "Running in Docker".
+
+x-app: &app
+  image: unharbored:${AGENT_VERSION:-docker}
+  # Built once, by init below; the other services use that image.
+  pull_policy: never
+  restart: unless-stopped
+  environment:
+    CP_HOST: ${CP_HOST:?set CP_HOST, the console's name}
+    AGENT_HOST: ${AGENT_HOST:?set AGENT_HOST, the name agents use}
+    ORG: ${ORG:-org-1}
+    EXTRA_AGENT_NAMES: ${EXTRA_AGENT_NAMES:-}
+    DB_CONNECTION: ${DB_CONNECTION:-sqlite}
+    MYSQL_PASSWORD: ${MYSQL_PASSWORD:-}
+  volumes:
+    - data:/var/lib/cloud-manager
+    - storage:/srv/cloud-manager/control-plane/storage
+    # Your own code (see "Customising" in the self-hosting guide): create ./custom first.
+    # - ./custom:/srv/cloud-manager/control-plane/custom:ro
+
+services:
+  # Optional: DB_CONNECTION=mysql MYSQL_PASSWORD=... COMPOSE_PROFILES=mysql docker compose up -d --build
+  # Without it the control plane uses SQLite in the data volume. Pick one before the first
+  # start; switching later does not move your data.
+  mysql:
+    image: mysql:8.4
+    profiles: ["mysql"]
+    # Lets the app's user create the audit log's append-only triggers while binary logging is on.
+    command: ["--log-bin-trust-function-creators=1"]
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: unharbored
+      MYSQL_USER: unharbored
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-}
+      MYSQL_RANDOM_ROOT_PASSWORD: "yes"
+    volumes:
+      - mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u unharbored -p$$MYSQL_PASSWORD --silent"]
+      interval: 5s
+      retries: 30
+
+  init:
+    <<: *app
+    pull_policy: build
+    build:
+      context: .
+      args:
+        AGENT_VERSION: ${AGENT_VERSION:-docker}
+    command: ["/opt/docker/init.sh"]
+    restart: "no"
+    # Waits for MySQL only when that profile is on.
+    depends_on:
+      mysql: { condition: service_healthy, required: false }
+
+  web:
+    <<: *app
+    depends_on:
+      init: { condition: service_completed_successfully }
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+      - "${HTTPS_PORT:-443}:443/udp"
+    volumes:
+      - data:/var/lib/cloud-manager
+      - storage:/srv/cloud-manager/control-plane/storage
+      - caddy:/data/caddy
+    networks:
+      default:
+        # The gateway posts its events to the agent name; inside the network that is this service.
+        aliases:
+          - ${AGENT_HOST:?}
+
+  queue:
+    <<: *app
+    command: ["php", "artisan", "queue:work", "--timeout=1300", "--tries=1", "--sleep=2"]
+    depends_on:
+      init: { condition: service_completed_successfully }
+
+  reverb:
+    <<: *app
+    command: ["php", "artisan", "reverb:start", "--host=0.0.0.0", "--port=9445"]
+    depends_on:
+      init: { condition: service_completed_successfully }
+
+  gateway:
+    <<: *app
+    command: ["/opt/docker/gateway.sh"]
+    depends_on:
+      init: { condition: service_completed_successfully }
+      web: { condition: service_started }
+    ports:
+      - "9443:9443"
+
+  cron:
+    <<: *app
+    # The cron daemon needs root; each job runs as www-data, as the cron file says.
+    user: root
+    command: ["cron", "-f"]
+    depends_on:
+      init: { condition: service_completed_successfully }
+
+volumes:
+  data:
+  storage:
+  caddy:
+  mysql:

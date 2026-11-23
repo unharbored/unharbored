@@ -1,0 +1,47 @@
+# GitHub Actions self-hosted runner.
+# Licence: MIT. Published at https://github.com/actions/runner/releases/tag/v2.338.2
+#
+# `setup: runner-register` is a reviewed action (App\Lib\Services\SetupActions): once, before
+# the first start, it runs config.sh --unattended --ephemeral --url <url> --name <name> as the
+# runner's user. The registration token is read by config.sh from ACTIONS_RUNNER_INPUT_TOKEN in
+# the environment file below, never an argument.
+# Read in the 2.338.2 tarball: the Listener does read ACTIONS_RUNNER_INPUT_*; config.sh and run.sh
+# work from their own folder (so the unit's working directory is the release folder, which the
+# runner's user owns), run.sh writes run-helper.sh there, and the host needs libicu, which the
+# action installs with the runner's own installdependencies.sh.
+# UNVERIFIED on a real server: the registration itself, that the sandbox lets jobs work, and that
+# an ephemeral runner (one job, then it exits and is unregistered; Restart=on-failure does not
+# bring it back) can be started again without a new token. Not offered until it has been run.
+schema: 1
+id: github-runner
+version: 1
+name: GitHub Actions runner
+category: CI
+description: A self-hosted runner that takes one job at a time and then exits (ephemeral).
+memory: 2GB
+runtime: native
+licence: MIT
+source: https://github.com/actions/runner/releases/tag/v2.338.2
+acknowledge: This runner executes code from the repositories it serves. Use a server with nothing else important on it and private repositories only.
+
+inputs:
+  - { key: name,  type: slug,   label: Name, help: "A short name for this service on the server, for example files. Lowercase letters, digits and dashes." }
+  - { key: url,   type: text,   label: "Repository or organisation URL", help: "Where the runner registers, for example https://github.com/your-org/your-repo" }
+  - { key: token, type: secret, label: "Registration token", help: "From the repository or organisation: Settings, Actions, Runners, New self-hosted runner" }
+
+runs:
+  download: https://github.com/actions/runner/releases/download/v2.338.2/actions-runner-linux-x64-2.338.2.tar.gz
+  sha256: "baebf204307bac6193480852732f0aba2ae97b6c5597c244f4d5558390147c40"
+  unpack: tar.gz
+  binary: run.sh
+  user: cm-gh-runner
+  data: /srv/cloud-manager/data/{{ name }}
+  command: "{{ binary }}"
+  setup: runner-register
+  env:
+    ACTIONS_RUNNER_INPUT_URL: "{{ inputs.url }}"
+    ACTIONS_RUNNER_INPUT_TOKEN: "{{ inputs.token }}"
+    RUNNER_ALLOW_RUNASROOT: "0"
+  limits: { memory: 2GB }
+
+requires: [ role:manager ]

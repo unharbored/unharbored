@@ -1,0 +1,16 @@
+# Managed by scripts/mgmt/setup.sh. Laravel Reverb: the console's websocket
+# transport. It binds loopback; nginx proxies /app to it on the console name.
+[Unit]
+Description=cloud-manager Reverb websocket server
+After=network-online.target
+
+[Service]
+User=www-data
+Environment=HOME=/tmp
+WorkingDirectory=/srv/cloud-manager/control-plane
+ExecStart=/usr/bin/php8.4 artisan reverb:start --host=127.0.0.1 --port=9445
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
