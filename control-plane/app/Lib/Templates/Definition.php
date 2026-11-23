@@ -144,7 +144,7 @@ final class Definition
         }
         foreach ($known as $key => $input) {
             if (! array_key_exists($key, $values) || $values[$key] === null || $values[$key] === '') {
-                if (! array_key_exists('default', $input)) {
+                if (! array_key_exists('default', $input) && ! isset($input['generate'])) {
                     $errors[$key] = 'is required';
                 }
 

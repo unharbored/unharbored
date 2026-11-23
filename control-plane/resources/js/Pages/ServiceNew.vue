@@ -95,10 +95,10 @@ async function create() {
     </ol>
 
     <Panel v-if="step === 1" title="Details" note="Blank fields use the default shown">
-        <Field v-for="f in form.fields ?? []" :key="f.key" :label="`${f.label}${f.required ? ' (required)' : ''}`" :hint="[f.help, f.type === 'secret' ? 'Kept in the vault. Never shown again, never stored with the service\'s settings.' : ''].filter(Boolean).join(' ')" :error="errors[`values.${f.key}`] || errors[`secrets.${f.key}`]" v-slot="{ id }">
+        <Field v-for="f in form.fields ?? []" :key="f.key" :label="`${f.label}${f.required ? ' (required)' : ''}`" :hint="[f.help, f.generated ? 'Leave it blank for a free name on the server\'s address (sslip.io); it needs no DNS record.' : '', f.type === 'secret' ? 'Kept in the vault. Never shown again, never stored with the service\'s settings.' : ''].filter(Boolean).join(' ')" :error="errors[`values.${f.key}`] || errors[`secrets.${f.key}`]" v-slot="{ id }">
           <select v-if="f.type === 'choice'" :id="id" v-model="values[f.key]"><option value="">Default: {{ f.default }}</option><option v-for="o in f.options" :key="o" :value="o">{{ o }}</option></select>
           <input v-else-if="f.type === 'secret'" :id="id" v-model="secrets[f.key]" type="password" autocomplete="off" spellcheck="false">
-          <input v-else :id="id" v-model="values[f.key]" :type="f.type === 'number' ? 'number' : 'text'" :placeholder="f.default ?? ''" autocomplete="off" spellcheck="false">
+          <input v-else :id="id" v-model="values[f.key]" :type="f.type === 'number' ? 'number' : 'text'" :placeholder="f.generated ? 'Blank: a free name is made for you' : (f.default ?? '')" autocomplete="off" spellcheck="false">
         </Field>
 
         <Field v-if="(form.projects ?? []).length > 1" label="Project" v-slot="{ id }">

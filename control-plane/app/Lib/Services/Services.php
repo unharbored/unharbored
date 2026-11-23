@@ -8,8 +8,11 @@ use App\Lib\Audit\Actor;
 use App\Lib\Audit\AuditLog;
 use App\Lib\Auth\Projects;
 use App\Lib\Auth\Roles;
+use App\Lib\Containers\ContainerApps;
 use App\Lib\Gateway\GatewayClient;
 use App\Lib\Operations\OperationRunner;
+use App\Lib\Providers\Incus\IncusHost;
+use App\Lib\Sites\NewApplications;
 use App\Lib\Sites\Runtimes;
 use App\Lib\Sites\Sites;
 use App\Lib\Templates\Definition;
@@ -158,7 +161,7 @@ final class Services
         $def = $this->definition($templateId);
 
         // What this version cannot do is refused, not skipped.
-        if (\App\Lib\Providers\Incus\IncusHost::reserved($node->role ?? null)) {
+        if (IncusHost::reserved($node->role ?? null)) {
             throw new InvalidArgumentException("{$node->node_id} is ".(($node->role ?? null) === 'ingress' ? "the Incus host's IPv4 ingress" : 'an Incus host').': nothing runs on it directly. Install services on a server on the host instead.');
         }
         if ($def->runtime === 'container' && $node->containers_ready_at === null) {
@@ -177,7 +180,7 @@ final class Services
             throw new InvalidArgumentException(implode('; ', array_map(fn ($k, $m) => "{$k} {$m}", array_keys($errors), $errors)));
         }
         $project = Projects::resolve($organizationId, $projectId);
-        $effective = $this->effective($def, $inputs);
+        $effective = $this->effective($def, $inputs, NewApplications::publicIp($organizationId, $nodeId));
         $name = $effective['name'];
 
         // The same planning the operation does, so a bad value is refused here and not halfway through an install.
@@ -503,7 +506,7 @@ final class Services
             if ($errors !== []) {
                 throw new InvalidArgumentException(implode('; ', array_map(fn ($k, $m) => "{$k} {$m}", array_keys($errors), $errors)));
             }
-            $effective = $this->effective($def, $full);
+            $effective = $this->effective($def, $full, NewApplications::publicIp($service->organization_id, $service->node_id));
             $context = $this->plan($def, $service->name, $effective);
             if ($context['data'] !== $service->data_path || ($service->runtime === 'native' && $context['user'] !== $service->run_user)) {
                 throw new InvalidArgumentException('This version moves the data folder or changes the user the service runs as; an update does not do that.');
@@ -590,12 +593,25 @@ final class Services
 
     // ---- placement checks (also run by the operation) ------------------------
 
-    /** Every input's effective value: what was supplied, else the default. @return array<string, string> */
-    public function effective(Definition $def, array $inputs): array
+    /**
+     * Every input's effective value: what was supplied, else the default. A domain input marked generate: sslip that is left
+     * blank becomes <service>-<input>.<server address>.sslip.io (the input key without "_host"), which needs no DNS record.
+     *
+     * @param  ?string  $address  the server's public address, for those generated names
+     * @return array<string, string>
+     */
+    public function effective(Definition $def, array $inputs, ?string $address = null): array
     {
         $out = [];
         foreach ($def->inputs as $input) {
             $v = $inputs[$input['key']] ?? null;
+            if (($v === null || $v === '') && ($input['generate'] ?? null) === 'sslip') {
+                $name = (string) ($out['name'] ?? $inputs['name'] ?? '');
+                if ($address === null || $name === '') {
+                    throw new InvalidArgumentException("{$input['key']} was left blank for a free name, but this server's public address is not known yet. Type a domain instead.");
+                }
+                $v = NewApplications::sslipDomain($name.'-'.preg_replace('/_host$/', '', $input['key']), $address);
+            }
             $out[$input['key']] = Definition::coerce($input, $v === null || $v === '' ? $input['default'] : $v);
         }
 
@@ -777,7 +793,7 @@ final class Services
                     $used[(int) $d['port']] ??= "a background process of {$site->name}";
                 }
             }
-            foreach (\App\Lib\Containers\ContainerApps::ports($site) as $port) {
+            foreach (ContainerApps::ports($site) as $port) {
                 $used[$port] ??= "the application {$site->name}";
             }
         }

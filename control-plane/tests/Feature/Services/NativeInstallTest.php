@@ -66,6 +66,27 @@ final class NativeInstallTest extends ServiceTestCase
         $this->assertEquals(['name' => 'files', 's3_host' => 'files-s3.example.com', 'ui_host' => 'files-ui.example.com', 'storage' => '10GB', 'backup' => 'snapshot'], json_decode($row->inputs, true));
     }
 
+    public function test_blank_domains_become_free_sslip_names_for_the_server_and_need_no_dns_record(): void
+    {
+        DB::table('enrollment_grants')->insert(['token_hash' => str_repeat('a', 64), 'organization_id' => 'org-1', 'node_id' => 'web-1.org-1',
+            'expires_at' => now()->addHour(), 'consumed_at' => now(), 'consumed_by_ip' => '203.0.113.40', 'created_at' => now(), 'updated_at' => now()]);
+
+        $made = $this->install('rustfs', ['name' => 'files', 'storage' => '10GB']);
+
+        $this->assertSame('succeeded', $made['status'], (string) DB::table('operations')->value('error'));
+        $stored = json_decode((string) $this->service()->inputs, true);
+        $this->assertSame('files-s3.203-0-113-40.sslip.io', $stored['s3_host']);
+        $this->assertSame('files-ui.203-0-113-40.sslip.io', $stored['ui_host']);
+        $this->assertSame(['files-s3.203-0-113-40.sslip.io', 'files-ui.203-0-113-40.sslip.io'], DB::table('service_endpoints')->orderBy('port')->pluck('domain')->all());
+    }
+
+    public function test_a_blank_domain_is_refused_when_the_servers_address_is_not_known(): void
+    {
+        $this->expectExceptionMessage('public address is not known');
+
+        $this->services()->install('org-1', 'web-1.org-1', 'rustfs', ['name' => 'files'], 'matt@example.com', 'manager', acknowledged: true, dispatch: false);
+    }
+
     public function test_a_checksum_mismatch_fails_the_install_and_leaves_nothing_running(): void
     {
         $this->failSteps = ['download' => 'the download does not match the sha256 in the template; nothing was unpacked'];

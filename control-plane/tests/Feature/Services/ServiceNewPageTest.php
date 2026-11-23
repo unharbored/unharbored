@@ -82,7 +82,9 @@ final class ServiceNewPageTest extends ServiceTestCase
         $page->assertInertia(fn (Assert $p) => $p->component('ServiceNew')->where('template', 'rustfs')->where('form.canInstall', true)->has('form.fields'));
         $fields = collect($page->inertiaProps('form')['fields'])->keyBy('key');
         $this->assertTrue($fields['name']['required']);
-        $this->assertTrue($fields['s3_host']['required']);
+        $this->assertFalse($fields['s3_host']['required'], 'a blank domain gets a free name');
+        $this->assertTrue($fields['s3_host']['generated']);
+        $this->assertFalse($fields['name']['generated']);
         $this->assertSame('50GB', $fields['storage']['default']);
         $this->assertSame('snapshot', $fields['backup']['default']);
         $servers = collect($page->inertiaProps('servers'))->keyBy('name');

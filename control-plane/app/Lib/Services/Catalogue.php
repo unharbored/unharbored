@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Lib\Services;
 
+use App\Lib\Providers\Incus\Ingress;
 use App\Lib\Providers\ProviderServer;
 use App\Lib\Templates\Definition;
 use App\Lib\Templates\Sources;
@@ -122,7 +123,8 @@ final class Catalogue
     {
         return array_map(fn ($i) => [
             'key' => $i['key'], 'type' => $i['type'], 'label' => $i['label'], 'help' => $i['help'] ?? null,
-            'default' => $i['default'] ?? null, 'options' => $i['options'] ?? [], 'required' => ! array_key_exists('default', $i),
+            'default' => $i['default'] ?? null, 'options' => $i['options'] ?? [], 'required' => ! array_key_exists('default', $i) && ! isset($i['generate']),
+            'generated' => isset($i['generate']),
         ], $def->inputs);
     }
 
@@ -178,6 +180,9 @@ final class Catalogue
     {
         $out = [];
         foreach ($endpoints as $e) {
+            if (str_ends_with($e['domain'], '.sslip.io')) {
+                continue;
+            }
             if ($ingress !== null) {
                 $out[] = ['domain' => $e['domain'], 'type' => 'A', 'value' => $ingress];
             }
@@ -224,7 +229,7 @@ final class Catalogue
             'project' => (string) DB::table('projects')->where('id', $a['project'])->value('name'),
             'data' => $a['context']['data'], 'storage' => $a['effective']['storage'] ?? null,
             'endpoints' => $endpoints,
-            'dns' => self::records($endpoints, $ip, \App\Lib\Providers\Incus\Ingress::ipv4ForNode($organizationId, $a['node']->node_id)),
+            'dns' => self::records($endpoints, $ip, Ingress::ipv4ForNode($organizationId, $a['node']->node_id)),
             'container' => $def->runtime !== 'container' ? null : [
                 'image' => $a['context']['repository'], 'digest' => $a['context']['digest'],
                 'memory' => $a['context']['limits']['memory'], 'cpu' => $a['context']['limits']['cpu'] ?? null,

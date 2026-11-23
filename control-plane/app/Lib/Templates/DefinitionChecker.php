@@ -148,7 +148,7 @@ final class DefinitionChecker
 
                 continue;
             }
-            $this->unknown($p, $in, ['key', 'type', 'label', 'default', 'options', 'help']);
+            $this->unknown($p, $in, ['key', 'type', 'label', 'default', 'options', 'help', 'generate']);
             $key = $this->key("$p.key", $in['key'] ?? null);
             $type = $in['type'] ?? null;
             if (! in_array($type, Definition::INPUT_TYPES, true)) {
@@ -170,6 +170,15 @@ final class DefinitionChecker
                 }
             } elseif (array_key_exists('options', $in)) {
                 $this->error("$p.options", 'only a choice input has options');
+            }
+            if (array_key_exists('generate', $in)) {
+                if ($type !== 'domain' || $in['generate'] !== 'sslip') {
+                    $this->error("$p.generate", 'only a domain input can have generate: sslip');
+                } elseif (array_key_exists('default', $in)) {
+                    $this->error("$p.generate", 'an input with generate: sslip cannot also have a default');
+                } else {
+                    $norm['generate'] = 'sslip';
+                }
             }
             if (array_key_exists('default', $in)) {
                 if ($type === 'secret') {
