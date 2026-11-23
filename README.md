@@ -17,6 +17,23 @@ rebuildable from this repository; see
 
 See [ROADMAP.md](ROADMAP.md) for status.
 
+## Screenshots
+
+An application: its domain and certificate, the servers it runs on, its
+processes, and where its data lives.
+
+![An application page showing its domain, servers, processes and database](docs/images/application.jpg)
+
+The audit log: every change and every secret read, append-only and
+hash-chained, with a check that the chain is intact.
+
+![The audit log with the chain intact](docs/images/audit-log.jpg)
+
+Databases: managed clusters at DigitalOcean, or PostgreSQL and MySQL on a
+server Unharbored runs at any other provider.
+
+![The Databases page with the create-cluster form](docs/images/databases.jpg)
+
 ## Why this exists
 
 [FEATURE-COMPARISON.md](FEATURE-COMPARISON.md) maps roughly 60 features across
