@@ -3,6 +3,8 @@
 namespace Tests\Feature;
 
 use App\Lib\Auth\Instance;
+use App\Lib\Auth\Org;
+use App\Lib\Auth\Roles;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -61,8 +63,8 @@ class InstanceTest extends TestCase
         DB::table('memberships')->insert(['user_id' => $admin->id, 'organization_id' => 'org-1', 'role' => 'viewer', 'created_at' => now(), 'updated_at' => now()]);
         DB::table('organizations')->insertOrIgnore(['id' => 'org-1', 'name' => 'Acme', 'created_at' => now(), 'updated_at' => now()]);
 
-        $this->assertNull(\App\Lib\Auth\Roles::roleOf($admin, 'org-9'));
-        $this->assertFalse(\App\Lib\Auth\Roles::can(\App\Lib\Auth\Roles::roleOf($admin, 'org-9'), 'view'));
+        $this->assertNull(Roles::roleOf($admin, 'org-9'));
+        $this->assertFalse(Roles::can(Roles::roleOf($admin, 'org-9'), 'view'));
     }
 
     public function test_an_unknown_setting_is_refused(): void
@@ -98,5 +100,18 @@ class InstanceTest extends TestCase
 
         $this->assertTrue(Instance::isAdmin(User::where('email', 'first@example.com')->first()));
         $this->assertFalse(Instance::isAdmin(User::where('email', 'second@example.com')->first()));
+    }
+
+    public function test_the_first_user_on_a_new_install_owns_the_default_team_so_they_can_use_the_console(): void
+    {
+        $this->artisan('user:create', ['email' => 'first@example.com'])
+            ->expectsQuestion('Password (at least 12 characters)', 'long-enough-password')
+            ->expectsQuestion('Again', 'long-enough-password')
+            ->assertSuccessful();
+
+        $first = User::where('email', 'first@example.com')->first();
+        $this->assertSame(['org-1'], Org::mine($first->id));
+        $this->assertDatabaseHas('memberships', ['user_id' => $first->id, 'organization_id' => 'org-1', 'role' => 'owner']);
+        $this->assertDatabaseHas('organizations', ['id' => 'org-1']);
     }
 }

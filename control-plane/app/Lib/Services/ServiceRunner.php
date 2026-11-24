@@ -6,7 +6,9 @@ namespace App\Lib\Services;
 
 use App\Lib\Audit\Actor;
 use App\Lib\Audit\AuditLog;
+use App\Lib\Providers\Incus\Ingress;
 use App\Lib\Servers\Firewall;
+use App\Lib\Sites\Deployer;
 use App\Lib\Sites\Sites;
 use App\Lib\Templates\Definition;
 use App\Lib\Vault\Vault;
@@ -29,6 +31,7 @@ final class ServiceRunner
     public function __construct(
         private readonly Services $services,
         private readonly Sites $sites,
+        private readonly Deployer $deployer,
         private readonly Vault $vault,
         private readonly AuditLog $audit,
         private readonly ServiceBackups $backups,
@@ -124,12 +127,15 @@ final class ServiceRunner
         DB::table('service_endpoints')->updateOrInsert(['service_id' => $service->id, 'port' => $port],
             ['node_id' => $service->node_id, 'domain' => $domain, 'tls' => false, 'updated_at' => now(), 'created_at' => now()]);
 
-        $apply(ServiceRecipes::vhost($c, $port, $domain, false), 120);
+        $ingress = Ingress::sourceForNode((string) $service->organization_id, (string) $service->node_id);
+        $apply(ServiceRecipes::vhost($c, $port, $domain, false, $ingress), 120);
+        // On an Incus host the name must route through the ingress before Let's Encrypt checks it.
+        $this->deployer->syncIngress((object) ['organization_id' => $service->organization_id, 'node_id' => $service->node_id]);
         $site = (object) ['name' => "service-{$service->name}", 'domain' => $domain];
         $apply($this->sites->clearStaleCertificateRecipe($domain), 60);
         $apply($this->sites->certificateRecipe($site), 180);
         DB::table('service_endpoints')->where('service_id', $service->id)->where('port', $port)->update(['tls' => true, 'updated_at' => now()]);
-        $apply(ServiceRecipes::vhost($c, $port, $domain, true), 120);
+        $apply(ServiceRecipes::vhost($c, $port, $domain, true, $ingress), 120);
         $log('proxy', "https://{$domain}/ serves 127.0.0.1:{$port}");
     }
 
@@ -438,7 +444,7 @@ final class ServiceRunner
         $id = (int) ($this->meta($operation)['service_id'] ?? 0);
 
         return DB::table('services')->where('id', $id)->where('organization_id', $operation->organization_id)->first()
-            ?? throw new RuntimeException("The service for this operation no longer exists.");
+            ?? throw new RuntimeException('The service for this operation no longer exists.');
     }
 
     /** @return array<string, mixed> */

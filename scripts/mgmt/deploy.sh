@@ -68,7 +68,8 @@ as_www package:discover --quiet
 as_www migrate --force
 as_www optimize:clear --quiet
 as_www config:cache --quiet
-systemctl reload php8.4-fpm
+FPM=$(systemctl list-units 'php*-fpm.service' --no-legend | awk '{print $1}')
+systemctl reload $FPM
 # Scheduled jobs ship with the code: without this, a new cron line would only exist after a full setup.sh run.
 install -m 0644 /srv/cloud-manager/scripts/mgmt/files/cron /etc/cron.d/cloud-manager
 systemctl restart cm-queue
@@ -79,5 +80,5 @@ if [ "$RESTART_GATEWAY" = 1 ]; then
   chmod 0755 /usr/local/bin/gateway.new && mv -f /usr/local/bin/gateway.new /usr/local/bin/gateway
   systemctl restart cm-gateway   # re-syncs organisations on start
 fi
-echo "deployed: $(systemctl is-active php8.4-fpm nginx cm-queue cm-gateway | tr '\n' ' ')"
+echo "deployed: $(systemctl is-active $FPM nginx cm-queue cm-gateway | tr '\n' ' ')"
 REMOTE

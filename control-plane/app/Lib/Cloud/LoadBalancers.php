@@ -106,7 +106,7 @@ final class LoadBalancers implements \App\Lib\Scaling\EdgeDriver
             ...$this->spec($site, $resource->attributes['certificate_id'] ?? null),
         ]);
 
-        return 'balancer sends traffic to '.implode(', ', array_map(fn ($n) => strstr($n, '.', true) ?: $n, Sites::nodes($site)));
+        return 'balancer sends traffic to '.implode(', ', array_map(fn ($n) => strstr($n, '.', true) ?: $n, Sites::webNodes($site)));
     }
 
     /**
@@ -225,7 +225,7 @@ final class LoadBalancers implements \App\Lib\Scaling\EdgeDriver
                 ->where('slug', strstr($node, '.', true) ?: $node)->value('external_id');
 
             return (int) ($id ?? throw new InvalidArgumentException("{$node} is not a Droplet the platform created, so a load balancer cannot name it."));
-        }, Sites::nodes($site));
+        }, Sites::webNodes($site));
     }
 
     private function region(stdClass $site): string

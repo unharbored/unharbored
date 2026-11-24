@@ -19,7 +19,7 @@ rsync -rlpt "$repo/control-plane/storage/agent/cloud-manager-agent-linux-"* "$ho
 ssh "$host" "set -e; cd /srv/cloud-manager/control-plane
   chown www-data:www-data storage/agent/cloud-manager-agent-linux-*
   sed -i 's|^AGENT_VERSION=.*|AGENT_VERSION=$version|' .env
-  runuser -u www-data -- env HOME=/tmp php8.4 artisan config:cache --quiet
+  runuser -u www-data -- env HOME=/tmp php artisan config:cache --quiet
   # The queue worker read the old version when it started, and upgrades run there.
   systemctl restart cm-queue
   echo \"serving agent $version\""

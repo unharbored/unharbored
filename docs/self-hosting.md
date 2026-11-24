@@ -31,7 +31,7 @@ Choose two names, for example:
 - `agent.example.com`: where agents enroll and hold their sessions (ports
   443 and 9443, signed by your own certificate authority)
 
-Create an Ubuntu 24.04 Droplet with your SSH key. Give it a cloud firewall
+Create an Ubuntu 24.04 (or 26.04) Droplet with your SSH key. Give it a cloud firewall
 allowing 22 from your own address, and 80, 443 and 9443 from anywhere.
 
 Point both names at its IPv4 address with A records, and wait until they

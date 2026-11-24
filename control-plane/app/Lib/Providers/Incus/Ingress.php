@@ -26,7 +26,7 @@ final class Ingress
     public const PROXY_PORT = 10443;
 
     /** Operation kinds after which a domain, a site or a server on the host may have changed. */
-    public const AFFECTS = ['app_create', 'app_delete', 'domain', 'preview_create', 'preview_destroy', 'server_destroy', 'provision', 'adopt'];
+    public const AFFECTS = ['app_create', 'app_delete', 'domain', 'preview_create', 'preview_destroy', 'server_destroy', 'provision', 'adopt', 'template_service_install', 'template_service_remove'];
 
     public function __construct(private readonly OperationRunner $runner) {}
 
@@ -122,7 +122,7 @@ final class Ingress
     }
 
     /**
-     * Every domain served by a server on the host, and that server's IPv6 address.
+     * Every domain served by a server on the host (an application's, or an address of a service), and that server's IPv6 address.
      *
      * @return array<string, string>
      */
@@ -140,6 +140,12 @@ final class Ingress
         foreach (DB::table('sites')->where('organization_id', $organizationId)->whereIn('node_id', array_keys($addresses))->orderBy('domain')->get(['domain', 'node_id']) as $site) {
             if (preg_match('/^[a-z0-9.-]+$/', (string) $site->domain)) {
                 $routes[(string) $site->domain] = $addresses[$site->node_id];
+            }
+        }
+        foreach (DB::table('service_endpoints')->join('services', 'services.id', '=', 'service_endpoints.service_id')->where('services.organization_id', $organizationId)
+            ->whereIn('service_endpoints.node_id', array_keys($addresses))->orderBy('service_endpoints.domain')->get(['service_endpoints.domain', 'service_endpoints.node_id']) as $endpoint) {
+            if (preg_match('/^[a-z0-9.-]+$/', (string) $endpoint->domain)) {
+                $routes[(string) $endpoint->domain] = $addresses[$endpoint->node_id];
             }
         }
 

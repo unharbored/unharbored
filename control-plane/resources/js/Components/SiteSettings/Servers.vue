@@ -4,13 +4,18 @@ import Notice from '../ui/Notice.vue';
 import FormError from '../ui/FormError.vue';
 import Field from '../ui/Field.vue';
 import Panel from '../ui/Panel.vue';
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import { useSiteSettings } from '../../composables/useSiteSettings';
 
 const props = defineProps({ site: Object, data: Object });
 const { send, ask, error } = useSiteSettings(() => props.site.id);
 
 const server = ref('');
+const role = ref('web');
+const NEW = '__new';
+const region = ref(props.data.newServer?.region ?? '');
+const size = ref(props.data.newServer?.size ?? '');
+const making = computed(() => server.value === NEW);
 const poolMin = ref(props.data.pool?.min ?? 1);
 const poolMax = ref(props.data.pool?.max ?? 3);
 const windowDays = ref('weekdays');
@@ -25,8 +30,19 @@ async function removeServer(s) {
     }
 }
 async function addServer() {
-    if (await ask({ title: 'Add the server?', message: `Add this server to ${props.site.name}? It is let through the site's cluster firewalls and the live branch is deployed to every server.`, ok: 'Add' })) {
-        send('servers/add', { server: server.value });
+    const worker = role.value === 'worker';
+    if (making.value) {
+        const label = props.data.newServer.sizes[size.value];
+        if (await ask({ title: `Make a ${worker ? 'worker' : 'web'} server?`, message: `Create a ${label} server at ${props.data.newServer.label} in ${props.data.newServer.regions[region.value]} for ${props.site.name}? It is billed by ${props.data.newServer.label} until you destroy it. Once it is set up it is added as ${worker ? 'a worker' : 'a web server'} and the live branch is deployed to it.`, ok: 'Make the server' })) {
+            send('servers/new', { role: role.value, region: region.value, size: size.value });
+        }
+        return;
+    }
+    const message = worker
+        ? `Add this server to ${props.site.name} as a worker? It runs the application's processes set to run on workers, and serves no web traffic. It is let through the site's cluster firewalls and the live branch is deployed to it.`
+        : `Add this server to ${props.site.name}? It is let through the site's cluster firewalls and the live branch is deployed to every server.`;
+    if (await ask({ title: worker ? 'Add the worker server?' : 'Add the server?', message, ok: 'Add' })) {
+        send('servers/add', { server: server.value, role: role.value });
     }
 }
 async function balance() {
@@ -66,13 +82,19 @@ const hours = (h) => String(h).padStart(2, '0') + ':00';
 <template>
   <Panel id="servers" title="Servers" note="Every deploy builds on all of them, then switches all of them">
       <div v-for="s in data.servers" :key="s.id" class="flex justify-between gap-3 items-center">
-        <span><b class="font-semibold text-ink-strong">{{ s.name }}</b> <span class="text-faint text-[13px]">{{ s.primary ? 'primary · migrations, scheduler, HTTPS certificate' : (s.pooled ? 'added by autoscaling' : (data.balancer ? 'web and workers, behind the balancer' : 'web and workers · port 80 only until a load balancer fronts the site')) }}</span></span>
+        <span><b class="font-semibold text-ink-strong">{{ s.name }}</b> <span class="text-faint text-[13px]">{{ s.primary ? 'primary · migrations, scheduler, HTTPS certificate' : (s.pooled ? 'added by autoscaling' : s.role === 'worker' ? 'worker · runs only the processes set to run on workers, no web traffic' : (data.balancer ? 'web and workers, behind the balancer' : 'web and workers · port 80 only until a load balancer fronts the site')) }}</span></span>
         <Btn small v-if="!s.primary && !s.pooled" @click="removeServer(s)">Remove</Btn>
       </div>
-      <div v-if="data.spare.length > 0" class="flex flex-wrap items-end gap-3">
+      <div v-if="data.spare.length > 0 || data.newServer" class="flex flex-wrap items-end gap-3">
         <Field label="Add a server" class="flex-[1_1_180px]" v-slot="{ id }">
-          <select :id="id" v-model="server"><option value="">Choose a server…</option><option v-for="n in data.spare" :key="n.id" :value="n.id">{{ n.name }}</option></select></Field>
-        <Btn @click="addServer">Add</Btn>
+          <select :id="id" v-model="server"><option value="">Choose a server…</option><option v-for="n in data.spare" :key="n.id" :value="n.id">{{ n.name }}</option><option v-if="data.newServer" :value="NEW">Make a new server…</option></select></Field>
+        <Field label="As" class="flex-[0_1_170px]" v-slot="{ id }">
+          <select :id="id" v-model="role"><option value="web">Web server</option><option value="worker">Worker server</option></select></Field>
+        <template v-if="making">
+          <Field label="Region" class="flex-[1_1_160px]" v-slot="{ id }"><select :id="id" v-model="region"><option v-for="(label, k) in data.newServer.regions" :key="k" :value="k">{{ label }}</option></select></Field>
+          <Field label="Size" class="flex-[1_1_220px]" v-slot="{ id }"><select :id="id" v-model="size"><option v-for="(label, k) in data.newServer.sizes" :key="k" :value="k">{{ label }}</option></select></Field>
+        </template>
+        <Btn :disabled="!server" @click="addServer">{{ making ? 'Make and add' : 'Add' }}</Btn>
       </div>
       <span v-else class="text-faint text-[13px]">No other server to add. <a href="/servers">Create one</a>.</span>
       <span v-if="data.balancer">Load balancer: <b class="text-accent">{{ data.balancer }}</b> <span class="text-faint text-[13px]">· point {{ site.domain }} here · HTTPS ends at the balancer with the site's own certificate</span></span>

@@ -6,6 +6,8 @@ namespace Tests\Feature\Services;
 
 use App\Lib\Audit\Actor;
 use App\Lib\Auth\Projects;
+use App\Lib\Operations\OperationRunner;
+use App\Lib\Providers\Providers;
 use App\Lib\Services\Catalogue;
 use App\Lib\Services\Services;
 use App\Lib\Templates\Sources;
@@ -58,6 +60,114 @@ final class ServiceNewPageTest extends ServiceTestCase
     private function create(array $over = [])
     {
         return $this->postJson('/services/new/create', $this->answers($over));
+    }
+
+    private function connectHetzner(): void
+    {
+        DB::table('cloud_credentials')->insert(['organization_id' => 'org-1', 'provider' => 'hetzner', 'vault_key' => 'cloud.hetzner.token', 'created_at' => now(), 'updated_at' => now()]);
+    }
+
+    /** What the page sends to make a server for the service. @return array<string, string> */
+    private function newServer(): array
+    {
+        $catalog = app(Providers::class)->get('hetzner')->catalog();
+        $big = array_key_first(array_filter($catalog->sizes, fn ($s) => $s['memory_gb'] >= 1));
+
+        return ['provider' => 'hetzner', 'region' => $catalog->defaultRegion, 'size' => $big];
+    }
+
+    public function test_a_connected_provider_offers_a_new_server_with_sizes_big_enough_and_none_without_one(): void
+    {
+        $this->member('manager');
+        $this->get('/services/new?template=rustfs')->assertInertia(fn (Assert $p) => $p->where('newServer', []));
+
+        $this->connectHetzner();
+        $page = $this->get('/services/new?template=rustfs')->assertOk();
+        $choice = $page->inertiaProps('newServer')['hetzner'];
+        $catalog = app(Providers::class)->get('hetzner')->catalog();
+        $this->assertSame($catalog->regions, $choice['regions']);
+        $this->assertNotEmpty($choice['sizes']);
+        foreach (array_keys($choice['sizes']) as $slug) {
+            $this->assertGreaterThanOrEqual(1, $catalog->sizes[$slug]['memory_gb'], 'RustFS needs 1GB');
+        }
+    }
+
+    public function test_a_container_template_or_one_that_asks_for_a_secret_is_not_offered_a_new_server(): void
+    {
+        config(['templates.offered' => ['rustfs', 'uptime-kuma']]);
+        $this->member('manager');
+        $this->connectHetzner();
+
+        $this->get('/services/new?template=uptime-kuma')->assertInertia(fn (Assert $p) => $p->where('newServer', []));
+        $this->create(['template' => 'uptime-kuma', 'values' => ['name' => 'status', 'host' => 'status.example.com'], 'node' => '', 'newServer' => $this->newServer(), 'acknowledged' => true])
+            ->assertStatus(422)->assertJsonValidationErrors('node');
+    }
+
+    public function test_the_review_for_a_new_server_needs_no_existing_one_and_makes_no_record(): void
+    {
+        $this->member('manager');
+        $this->connectHetzner();
+
+        $review = $this->check(['node' => '', 'newServer' => $this->newServer(), 'values' => ['name' => 'files', 'storage' => '10GB']])->assertOk()->json();
+
+        $this->assertTrue($review['newServer']);
+        $this->assertStringStartsWith('A new Hetzner server (', $review['server']);
+        $this->assertSame([], $review['dns'], 'free names need no DNS record');
+        $this->assertNull($this->service());
+        $this->assertSame(0, DB::table('operations')->count());
+    }
+
+    public function test_creating_with_a_new_server_queues_one_operation_that_makes_the_server_then_installs(): void
+    {
+        $this->member('manager');
+        $this->connectHetzner();
+
+        $id = $this->create(['node' => '', 'newServer' => $this->newServer()])->assertOk()->json('operation');
+
+        $op = DB::table('operations')->where('id', $id)->first();
+        $this->assertSame('service_create', $op->kind);
+        $this->assertSame(['server', 'service'], array_column(json_decode($op->stages, true), 'name'));
+        $meta = json_decode($op->meta, true);
+        $this->assertSame(['svc-files', 'hetzner'], [$meta['server']['slug'], $meta['server']['provider']]);
+        $this->assertSame('files-s3.example.com', $meta['inputs']['s3_host']);
+        $this->assertNull($this->service(), 'the service is made once the server exists');
+        $this->assertNull(DB::table('nodes')->where('node_id', 'svc-files.org-1')->first());
+    }
+
+    public function test_the_operation_waits_for_the_server_then_installs_on_it_and_finishes_when_the_service_does(): void
+    {
+        $this->member('manager');
+        $this->connectHetzner();
+        $id = $this->create(['node' => '', 'newServer' => $this->newServer()])->assertOk()->json('operation');
+        $runner = $this->app->make(OperationRunner::class);
+
+        $this->assertSame('waiting', $runner->run($id));
+        $provision = DB::table('operations')->where('kind', 'provision')->first();
+        $this->assertSame('svc-files.org-1', $provision->node_id);
+        $this->assertSame('waiting', $runner->run($id), 'still being made');
+
+        DB::table('operations')->where('id', $provision->id)->update(['status' => 'succeeded']);
+        $this->node('svc-files.org-1', 'org-1');
+        $this->assertSame('waiting', $runner->run($id));
+        $service = $this->service();
+        $this->assertSame('svc-files.org-1', $service->node_id);
+        $install = DB::table('operations')->where('kind', 'template_service_install')->first();
+
+        DB::table('operations')->where('id', $install->id)->update(['status' => 'succeeded']);
+        $this->assertSame('succeeded', $runner->run($id));
+    }
+
+    public function test_the_operation_fails_and_says_where_the_server_is_when_the_server_cannot_be_made(): void
+    {
+        $this->member('manager');
+        $this->connectHetzner();
+        $id = $this->create(['node' => '', 'newServer' => $this->newServer()])->assertOk()->json('operation');
+        $runner = $this->app->make(OperationRunner::class);
+        $runner->run($id);
+        DB::table('operations')->where('kind', 'provision')->update(['status' => 'failed', 'error' => 'no capacity']);
+
+        $this->assertSame('failed', $runner->run($id));
+        $this->assertStringContainsString('server failed', (string) DB::table('operations')->where('id', $id)->value('error'));
     }
 
     public function test_a_template_that_is_not_offered_has_no_form_and_cannot_be_installed_from_the_console(): void

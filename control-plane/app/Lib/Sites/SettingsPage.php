@@ -42,7 +42,7 @@ final class SettingsPage
             'runtime' => Runtimes::runtime($row),
             'capabilities' => Runtimes::capabilities($row),
             // A free name that needs no DNS, offered while the application has no domain of its own.
-            'freeAddress' => \App\Lib\Sites\NewApplications::freeAddress($row),
+            'freeAddress' => NewApplications::freeAddress($row),
             'pending' => $row->pending_since !== null,
             'pendingSince' => Present::ago($row->pending_since),
             'project' => (int) $row->project_id,
@@ -213,6 +213,33 @@ final class SettingsPage
         }
     }
 
+    /**
+     * Where a server could be made for this application: its own provider's regions and sizes. None for a provider that is not
+     * connected through its API (a server reached over SSH cannot be made), or for someone who may not change infrastructure.
+     *
+     * @return array{label: string, regions: array<string, string>, region: string, sizes: array<string, string>, size: string}|null
+     */
+    public static function newServerChoices(object $row): ?array
+    {
+        if (! auth()->user()?->can('infrastructure') || Runtimes::isContainer($row)) {
+            return null;
+        }
+        foreach (app(\App\Lib\Providers\Providers::class)->connected(Org::id()) as $p) {
+            if ($p->id() !== (string) ($row->provider ?? 'digitalocean') || $p->method() !== 'api') {
+                continue;
+            }
+            $c = $p->catalog();
+            if ($c->sizes === []) {
+                return null;
+            }
+
+            return ['label' => $p->label(), 'regions' => $c->regions, 'region' => $c->defaultRegion,
+                'sizes' => array_map(\App\Lib\Providers\Catalog::sizeLabel(...), $c->sizes), 'size' => array_key_first($c->sizes)];
+        }
+
+        return null;
+    }
+
     /** @return array<string, mixed> */
     private static function servers(object $row): array
     {
@@ -220,6 +247,7 @@ final class SettingsPage
 
         return [
             'servers' => array_map(fn ($n) => ['id' => $n, 'name' => strstr($n, '.', true) ?: $n, 'primary' => $n === $row->node_id,
+                'role' => in_array($n, Sites::workerNodes($row), true) ? Sites::ROLE_WORKER : Sites::ROLE_WEB,
                 'pooled' => DB::table('site_nodes')->where('site_id', $row->id)->where('node_id', $n)->whereNotNull('autoscale_pool_id')->exists()], Sites::nodes($row)),
             'spare' => DB::table('nodes')->where('organization_id', $row->organization_id)->whereNotIn('node_id', Sites::nodes($row))
                 ->whereNotIn('node_id', DB::table('site_nodes')->whereNotNull('autoscale_pool_id')->select('node_id'))
@@ -229,6 +257,7 @@ final class SettingsPage
                 ? (json_decode((string) DB::table('resources')->where('organization_id', $org)->where('id', $row->load_balancer_id)->value('attributes'), true)['ip'] ?? 'starting')
                 : null,
             'scalerLimit' => ServerScaler::FAILURES_BEFORE_PAUSE,
+            'newServer' => self::newServerChoices($row),
         ];
     }
 
@@ -246,6 +275,11 @@ final class SettingsPage
             'reverb' => (bool) $row->reverb,
             'reverbPort' => Sites::reverbPort($row),
             'daemons' => Sites::daemons($row),
+            'presets' => LaravelServices::catalogue(),
+            // Where a process runs only matters once the application has more than one server.
+            'serverCount' => count(Sites::nodes($row)),
+            'workerServers' => count(Sites::workerNodes($row)),
+            'workersOn' => (string) ($row->workers_on ?? 'all'),
         ];
     }
 

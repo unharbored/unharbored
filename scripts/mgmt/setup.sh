@@ -30,7 +30,7 @@ APP=/srv/cloud-manager/control-plane
 FILES=/srv/cloud-manager/scripts/mgmt/files
 DATA=/var/lib/cloud-manager
 DB="$DATA/control-plane.sqlite"
-PHP=/usr/bin/php8.4
+PHP=/usr/bin/php
 
 say() { printf '\n==> %s\n' "$*"; }
 artisan() { (cd "$APP" && runuser -u www-data -- env HOME=/tmp XDG_CONFIG_HOME=/tmp "$PHP" artisan "$@"); }
@@ -59,7 +59,12 @@ apt-get install -y -qq software-properties-common curl ca-certificates unzip sql
 if [ -z "$(ls /etc/apt/sources.list.d/ | grep ondrej-ubuntu-php || true)" ]; then
   LC_ALL=C.UTF-8 add-apt-repository -y ppa:ondrej/php >/dev/null
 fi
-apt-get install -y -qq php8.4-cli php8.4-fpm php8.4-sqlite3 php8.4-mbstring php8.4-xml php8.4-curl php8.4-zip php8.4-bcmath php8.4-intl >/dev/null
+# PHP 8.4 where it can be had (the PPA carries it for LTS releases up to 24.04).
+# Where it cannot (26.04 ships 8.5 and the PPA has no 8.4 for it) the distribution's own PHP is
+# used: composer.json allows ^8.4. The unversioned php, php-fpm.sock and php*-fpm names
+# below follow whichever is installed.
+if apt-cache policy php8.4-cli | grep -q 'Candidate: [0-9]'; then V=8.4; else V=; fi
+apt-get install -y -qq "php$V-cli" "php$V-fpm" "php$V-sqlite3" "php$V-mbstring" "php$V-xml" "php$V-curl" "php$V-zip" "php$V-bcmath" "php$V-intl" >/dev/null
 if [ ! -x /usr/local/bin/composer ]; then
   curl -fsSL https://getcomposer.org/download/latest-2.x/composer.phar -o /usr/local/bin/composer.tmp
   chmod 0755 /usr/local/bin/composer.tmp && mv /usr/local/bin/composer.tmp /usr/local/bin/composer
@@ -191,13 +196,14 @@ render cm-queue.service > /etc/systemd/system/cm-queue.service
 install -m 0644 "$FILES/cm-reverb.service" /etc/systemd/system/cm-reverb.service
 install -m 0644 "$FILES/cron" /etc/cron.d/cloud-manager
 systemctl daemon-reload
-systemctl enable --now php8.4-fpm nginx cron >/dev/null 2>&1
+FPM=$(systemctl list-unit-files 'php*-fpm.service' --no-legend | awk '{print $1}')
+systemctl enable --now $FPM nginx cron >/dev/null 2>&1
 systemctl reload nginx
 systemctl enable cm-gateway cm-queue cm-reverb >/dev/null 2>&1
 systemctl restart cm-gateway cm-queue cm-reverb
 
 say "Done"
-echo "services: $(systemctl is-active php8.4-fpm nginx cm-gateway cm-queue cm-reverb cron | tr '\n' ' ')"
+echo "services: $(systemctl is-active $FPM nginx cm-gateway cm-queue cm-reverb cron | tr '\n' ' ')"
 echo "console:  https://$CP_HOST"
 echo "agents:   https://$AGENT_HOST (and $AGENT_HOST:9443 for sessions)"
 [ -s /usr/local/bin/gateway ] || echo "WARNING: /usr/local/bin/gateway is missing; provision.sh uploads it"

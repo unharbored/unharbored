@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Lib\Services;
 
+use App\Lib\Providers\Incus\Ingress;
 use App\Lib\Servers\ServerStack;
 use App\Lib\Templates\Definition;
 
@@ -364,10 +365,11 @@ UNIT;
     /**
      * The service's vhost for one domain. Before the certificate exists it answers HTTP only (and the ACME
      * challenge); with $tls it redirects port 80 and serves 443. Checked by nginx -t, the old file put back on failure.
+     * $ingress is the address of the Incus host's IPv4 ingress when the server sits behind one (see Ingress).
      *
      * @return array{name: string, steps: list<array<string, mixed>>}
      */
-    public static function vhost(array $c, int $port, string $domain, bool $tls): array
+    public static function vhost(array $c, int $port, string $domain, bool $tls, ?string $ingress = null): array
     {
         $conf = self::vhostPath($c['name'], $port);
         $backup = "/var/backups/cloud-manager/nginx/cm-svc-{$c['name']}-{$port}.conf";
@@ -377,7 +379,7 @@ UNIT;
             ['id' => 'vhost-backup', 'type' => 'command', 'name' => 'sh',
                 'args' => ['-c', 'install -d -m 0700 '.dirname($backup).' && if [ -f '.$conf.' ]; then cp -p '.$conf.' '.$backup.'; else rm -f '.$backup.'; fi'],
                 'description' => 'previous web server configuration kept'],
-            ['id' => 'vhost', 'type' => 'file', 'path' => $conf, 'content_b64' => base64_encode(self::vhostFile($c, $port, $domain, $tls)), 'mode' => '0644'],
+            ['id' => 'vhost', 'type' => 'file', 'path' => $conf, 'content_b64' => base64_encode(self::vhostFile($c, $port, $domain, $tls, $ingress)), 'mode' => '0644'],
             ['id' => 'nginx-test', 'type' => 'command', 'name' => 'sh',
                 'args' => ['-c', 'nginx -t 2>&1 && exit 0; if [ -f '.$backup.' ]; then cp -p '.$backup.' '.$conf.'; else rm -f '.$conf.'; fi; exit 1'],
                 'description' => 'nginx configuration is valid'],
@@ -390,10 +392,15 @@ UNIT;
         return "/etc/nginx/sites-enabled/cm-svc-{$name}-{$port}.conf";
     }
 
-    public static function vhostFile(array $c, int $port, string $domain, bool $tls): string
+    public static function vhostFile(array $c, int $port, string $domain, bool $tls, ?string $ingress = null): string
     {
         $acme = ServerStack::ACME_WEBROOT;
         $challenge = "    location ^~ /.well-known/acme-challenge/ {\n        root {$acme};\n        default_type text/plain;\n    }";
+
+        // Behind the ingress, HTTP arrives with X-Forwarded-For and HTTPS on its own port with a PROXY header; only the
+        // ingress's address is believed. Visitors with IPv6 keep using 80 and 443.
+        $realIpHttp = $ingress === null ? '' : "    set_real_ip_from {$ingress};\n    real_ip_header X-Forwarded-For;\n";
+        $ingressTls = $ingress === null ? '' : '    listen [::]:'.Ingress::PROXY_PORT." ssl http2 proxy_protocol;\n    set_real_ip_from {$ingress};\n    real_ip_header proxy_protocol;\n";
 
         $limits = '';
         $max = $c['proxy']['client_max_body_size'] ?? null;
@@ -422,11 +429,11 @@ CONF;
 
         $head = "# Managed by Unharbored (service {$c['name']}). Changes here are overwritten.\n";
         if (! $tls) {
-            return $head."server {\n    listen 80;\n    listen [::]:80;\n    server_name {$domain};\n{$limits}\n{$challenge}\n\n{$proxy}\n}\n";
+            return $head."server {\n    listen 80;\n    listen [::]:80;\n    server_name {$domain};\n{$realIpHttp}{$limits}\n{$challenge}\n\n{$proxy}\n}\n";
         }
 
-        return $head."server {\n    listen 80;\n    listen [::]:80;\n    server_name {$domain};\n\n{$challenge}\n\n    location / {\n        return 301 https://\$host\$request_uri;\n    }\n}\n\n"
-            ."server {\n    listen 443 ssl http2;\n    listen [::]:443 ssl http2;\n    server_name {$domain};\n"
+        return $head."server {\n    listen 80;\n    listen [::]:80;\n    server_name {$domain};\n{$realIpHttp}\n{$challenge}\n\n    location / {\n        return 301 https://\$host\$request_uri;\n    }\n}\n\n"
+            ."server {\n    listen 443 ssl http2;\n    listen [::]:443 ssl http2;\n{$ingressTls}    server_name {$domain};\n"
             ."    ssl_certificate /etc/letsencrypt/live/{$domain}/fullchain.pem;\n    ssl_certificate_key /etc/letsencrypt/live/{$domain}/privkey.pem;\n"
             ."    ssl_protocols TLSv1.2 TLSv1.3;\n    ssl_session_cache shared:SSL:10m;\n    add_header Strict-Transport-Security \"max-age=31536000\" always;\n{$limits}\n{$proxy}\n}\n";
     }

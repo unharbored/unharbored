@@ -492,8 +492,11 @@ final class OperationRunner
      * Adds a server to a site: admits it to the site's clusters, then
      * deploys the live branch everywhere, which sets the new server up.
      */
-    public function queueServerAdd(int $siteId, string $nodeId, string $trigger, string $actor): int
+    public function queueServerAdd(int $siteId, string $nodeId, string $trigger, string $actor, string $role = Sites::ROLE_WEB): int
     {
+        if (! in_array($role, [Sites::ROLE_WEB, Sites::ROLE_WORKER], true)) {
+            throw new \InvalidArgumentException('A server is added as a web server or a worker server.');
+        }
         $site = $this->site($siteId);
         \App\Lib\Containers\ContainerApps::refuse($site, 'servers');
         if (\App\Lib\Providers\Incus\IncusHost::reserved(DB::table('nodes')->where('node_id', $nodeId)->value('role'))) {
@@ -503,7 +506,7 @@ final class OperationRunner
         $now = gmdate('Ymd\THis\Z');
 
         return $this->queue($this->operations->create($site->organization_id, 'server_add', "Add {$short} to {$site->name}", $trigger, $actor,
-            ['admit', ...Deployer::STAGES], $site->id, $site->node_id, meta: ['node' => $nodeId, 'now' => $now]));
+            ['admit', ...Deployer::STAGES], $site->id, $site->node_id, meta: ['node' => $nodeId, 'now' => $now, 'role' => $role]));
     }
 
     /** Puts a DigitalOcean Load Balancer in front of the site's servers. */
@@ -893,6 +896,33 @@ final class OperationRunner
             ['preflight', 'create', 'enroll', $host ? 'incus' : 'stack'], nodeId: "{$slug}.{$organizationId}", meta: ['slug' => $slug, 'spec' => $spec] + ($keys !== null ? ['keys' => array_values($keys)] : [])));
     }
 
+    /**
+     * A service on a server made for it: the server first (a provision operation), then the install on it. The inputs are
+     * held here in the clear, so a template that asks for a secret is refused for this path.
+     *
+     * @param  array<string, mixed>  $inputs
+     * @param  array{slug: string, provider: string, region: string, size: string}  $server
+     */
+    public function queueServiceCreate(string $organizationId, string $template, string $name, array $inputs, array $server, ?int $project, bool $acknowledged, bool $portsApproved, string $role, string $actor): int
+    {
+        return $this->queue($this->operations->create($organizationId, 'service_create', "Create {$name} on a new server", 'console', $actor, ['server', 'service'],
+            meta: ['template' => $template, 'name' => $name, 'inputs' => $inputs, 'server' => $server, 'project' => $project, 'acknowledged' => $acknowledged,
+                'portsApproved' => $portsApproved, 'role' => $role, 'done' => [], 'children' => []]));
+    }
+
+    /** Makes a server for an application and adds it to it, as a web or a worker server: one operation, two child operations. */
+    public function queueSiteServerCreate(int $siteId, array $server, string $role, string $actor): int
+    {
+        if (! in_array($role, [Sites::ROLE_WEB, Sites::ROLE_WORKER], true)) {
+            throw new \InvalidArgumentException('A server is added as a web server or a worker server.');
+        }
+        $site = $this->site($siteId);
+        \App\Lib\Containers\ContainerApps::refuse($site, 'servers');
+
+        return $this->queue($this->operations->create($site->organization_id, 'site_server_create', "Make a new {$role} server for {$site->name}", 'console', $actor, ['server', 'add'],
+            siteId: $site->id, nodeId: $site->node_id, meta: ['server' => $server, 'role' => $role, 'done' => [], 'children' => []]));
+    }
+
     /** The IPv4 ingress on an Incus host: created like any server, then set up as the ingress instead of with the stack. */
     public function queueIngressCreate(string $organizationId, string $slug, string $actor): int
     {
@@ -957,6 +987,8 @@ final class OperationRunner
                 'database_create' => $this->databaseCreate($operation, $stage, $log),
                 'database_attach' => $this->databaseAttach($operation, $stage, $log),
                 'service_install' => $this->serviceInstall($operation, $stage, $log),
+                'service_create' => $this->serviceCreate($operation, $stage, $log),
+                'site_server_create' => $this->siteServerCreate($operation, $stage, $log),
                 'local_service' => $this->localService($operation, $stage, $log),
                 'template_service_install' => $this->templateServiceInstall($operation, $stage, $log),
                 'template_service_action' => $this->templateServiceAction($operation, $stage, $log),
@@ -2206,6 +2238,93 @@ final class OperationRunner
         return [];
     }
 
+    /**
+     * Makes the server, then installs the service on it; each is an operation of its own, waited for. Re-entered after
+     * each wait, so what is done is kept in the operation's meta.
+     *
+     * @return array<string, mixed>
+     */
+    private function serviceCreate(object $operation, Closure $stage, Closure $log): array
+    {
+        $id = (int) $operation->id;
+        $meta = json_decode((string) $operation->meta, true) ?: [];
+        $org = (string) $operation->organization_id;
+        $actor = (string) $operation->actor;
+        $node = "{$meta['server']['slug']}.{$org}";
+
+        foreach (['server', 'service'] as $step) {
+            if (in_array($step, $meta['done'], true)) {
+                continue;
+            }
+            $stage($step);
+            $child = $meta['children'][$step] ?? null;
+            if ($child === null) {
+                $child = $step === 'server'
+                    ? $this->queueProvision($org, (string) $meta['server']['slug'], ['provider' => (string) $meta['server']['provider'], 'region' => (string) $meta['server']['region'], 'size' => (string) $meta['server']['size']], 'service_create', $actor)
+                    : app(\App\Lib\Services\Services::class)->install($org, $node, (string) $meta['template'], (array) $meta['inputs'], $actor, (string) $meta['role'],
+                        (bool) $meta['acknowledged'], true, $meta['project'], (bool) $meta['portsApproved'], 'service_create')['operation_id'];
+                $meta['children'][$step] = $child;
+                $this->operations->mergeMeta($id, ['children' => $meta['children']]);
+                $log($step, "operation #{$child} started");
+
+                throw new OperationWaiting();
+            }
+            $result = $this->operations->find((int) $child);
+            if (in_array($result->status ?? null, ['queued', 'running', 'waiting'], true)) {
+                throw new OperationWaiting();
+            }
+            if (($result->status ?? null) !== 'succeeded') {
+                throw new RuntimeException("{$step} failed (operation #{$child}): ".($result->error ?? 'no detail').($step === 'service' ? " The server {$node} was made and is still there; install the service on it again from the templates, or destroy the server." : ''));
+            }
+            $log($step, "operation #{$child} succeeded");
+            $meta['done'][] = $step;
+            $this->operations->mergeMeta($id, ['done' => $meta['done']]);
+        }
+        $log('done', "{$meta['name']} is running on {$node}");
+
+        return [];
+    }
+
+    /** @return array<string, mixed> */
+    private function siteServerCreate(object $operation, Closure $stage, Closure $log): array
+    {
+        $id = (int) $operation->id;
+        $meta = json_decode((string) $operation->meta, true) ?: [];
+        $org = (string) $operation->organization_id;
+        $node = "{$meta['server']['slug']}.{$org}";
+
+        foreach (['server', 'add'] as $step) {
+            if (in_array($step, $meta['done'], true)) {
+                continue;
+            }
+            $stage($step);
+            $child = $meta['children'][$step] ?? null;
+            if ($child === null) {
+                $child = $step === 'server'
+                    ? $this->queueProvision($org, (string) $meta['server']['slug'], ['provider' => (string) $meta['server']['provider'], 'region' => (string) $meta['server']['region'], 'size' => (string) $meta['server']['size']], 'site_server_create', (string) $operation->actor)
+                    : $this->queueServerAdd((int) $operation->site_id, $node, 'site_server_create', (string) $operation->actor, (string) $meta['role']);
+                $meta['children'][$step] = $child;
+                $this->operations->mergeMeta($id, ['children' => $meta['children']]);
+                $log($step, "operation #{$child} started");
+
+                throw new OperationWaiting();
+            }
+            $result = $this->operations->find((int) $child);
+            if (in_array($result->status ?? null, ['queued', 'running', 'waiting'], true)) {
+                throw new OperationWaiting();
+            }
+            if (($result->status ?? null) !== 'succeeded') {
+                throw new RuntimeException("{$step} failed (operation #{$child}): ".($result->error ?? 'no detail').($step === 'add' ? " The server {$node} was made and is still there; add it to the application from its Servers tab, or destroy it." : ''));
+            }
+            $log($step, "operation #{$child} succeeded");
+            $meta['done'][] = $step;
+            $this->operations->mergeMeta($id, ['done' => $meta['done']]);
+        }
+        $log('done', "{$node} is a {$meta['role']} server for the application");
+
+        return [];
+    }
+
     private function serviceInstall(object $operation, Closure $stage, Closure $log): array
     {
         $stage('install');
@@ -2315,7 +2434,8 @@ final class OperationRunner
         foreach (app(\App\Lib\Cloud\DatabaseClusters::class)->admitServer($site, $node) as $line) {
             $log('db', $line);
         }
-        DB::table('site_nodes')->insertOrIgnore(['site_id' => $site->id, 'node_id' => $node, 'created_at' => now(), 'updated_at' => now()]);
+        $role = (string) ($meta['role'] ?? Sites::ROLE_WEB);
+        Sites::addNode($site, $node, $role);
         if ($site->current_release === null) {
             $log('server', 'added; the first deploy sets it up');
 
@@ -2330,7 +2450,8 @@ final class OperationRunner
             DB::table('site_nodes')->where('site_id', $site->id)->where('node_id', $node)->delete();
             throw new RuntimeException($e->getMessage().' The server was not added.', 0, $e);
         }
-        if ($site->load_balancer_id !== null) {
+        // A worker server takes no traffic, so the balancer is left as it is.
+        if ($site->load_balancer_id !== null && $role !== Sites::ROLE_WORKER) {
             $log('balancer', app(\App\Lib\Cloud\LoadBalancers::class)->apply($site));
         }
 
