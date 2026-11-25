@@ -9,6 +9,8 @@ use App\Lib\Cloud\AutoscalePools;
 use App\Lib\Operations\OperationRunner;
 use App\Lib\Providers\Providers;
 use App\Lib\Scaling\ServerScaler;
+use App\Lib\Sites\NewApplications;
+use App\Lib\Sites\SettingsPage;
 use App\Lib\Sites\Sites;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -25,9 +27,13 @@ final class SiteServersController extends SiteSettingsBase
         Gate::authorize('infrastructure');
         $row = $this->row($site);
         $node = (string) $request->input('server', '');
+        $role = (string) $request->input('role', Sites::ROLE_WEB);
+        if (! in_array($role, [Sites::ROLE_WEB, Sites::ROLE_WORKER], true)) {
+            throw ValidationException::withMessages(['server' => 'Add it as a web server or a worker server.']);
+        }
         if ($row->database_cluster_id === null) {
             // SQLite lives on one server; migrations run on the primary only.
-            throw ValidationException::withMessages(['server' => 'Attach a managed database first: SQLite cannot be shared between servers.']);
+            throw ValidationException::withMessages(['server' => 'Attach a managed database first: SQLite cannot be shared between servers, so a second server could not run the same application.']);
         }
         $ok = DB::table('nodes')->where('node_id', $node)->where('organization_id', $row->organization_id)->exists();
         if (! $ok || in_array($node, Sites::nodes($row), true)) {
@@ -41,7 +47,36 @@ final class SiteServersController extends SiteSettingsBase
             throw ValidationException::withMessages(['server' => "That server already runs another site called {$row->name}."]);
         }
 
-        return $this->toOperation(app(OperationRunner::class)->queueServerAdd($row->id, $node, 'console', $this->email()));
+        return $this->toOperation(app(OperationRunner::class)->queueServerAdd($row->id, $node, 'console', $this->email(), $role));
+    }
+
+    /** Makes a server at the application's own provider and adds it, as a web or a worker server. */
+    public function create(Request $request, int $site): Response
+    {
+        Gate::authorize('infrastructure');
+        $row = $this->row($site);
+        $role = (string) $request->input('role', Sites::ROLE_WEB);
+        if (! in_array($role, [Sites::ROLE_WEB, Sites::ROLE_WORKER], true)) {
+            throw ValidationException::withMessages(['server' => 'Add it as a web server or a worker server.']);
+        }
+        if ($row->database_cluster_id === null) {
+            throw ValidationException::withMessages(['server' => 'Attach a managed database first: SQLite cannot be shared between servers, so a second server could not run the same application.']);
+        }
+        $choice = SettingsPage::newServerChoices($row) ?? throw ValidationException::withMessages(['server' => 'A server cannot be made at this application\'s provider from here. Connect it, or add a server you already have.']);
+        $region = (string) $request->input('region', '');
+        $size = (string) $request->input('size', '');
+        if (! isset($choice['regions'][$region]) || ! isset($choice['sizes'][$size])) {
+            throw ValidationException::withMessages(['server' => 'Pick a region and size from the lists.']);
+        }
+        $provider = app(Providers::class)->get((string) ($row->provider ?? 'digitalocean'));
+        $offered = method_exists($provider, 'availableSizes') ? $provider->availableSizes(Org::id(), $region) : null;
+        if ($offered !== null && ! in_array($size, $offered, true)) {
+            throw ValidationException::withMessages(['server' => "{$choice['label']} does not offer {$size} in {$region}. Pick another size or region."]);
+        }
+        $base = rtrim(substr(preg_replace('/[^a-z0-9-]/', '', strtolower($row->name.'-'.$role)), 0, 28), '-');
+        $server = ['slug' => NewApplications::freeSlug(Org::id(), $base), 'provider' => (string) ($row->provider ?? 'digitalocean'), 'region' => $region, 'size' => $size];
+
+        return $this->toOperation(app(OperationRunner::class)->queueSiteServerCreate($row->id, $server, $role, $this->email()));
     }
 
     public function remove(Request $request, int $site): Response

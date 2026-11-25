@@ -153,12 +153,39 @@ final class Services
         return $a;
     }
 
+    /**
+     * The same review for a server that will be made for this service: everything that does not need the server to exist.
+     * The checks that read the server (its ports, memory and disk) run when the install does, on the server that was made.
+     *
+     * @param  array<string, mixed>  $inputs
+     * @return array{def: Definition, node: object, name: string, effective: array<string, string>, context: array<string, mixed>, project: int}
+     *
+     * @throws AuthorizationException
+     * @throws InvalidArgumentException
+     */
+    public function checkOnNewServer(string $organizationId, string $slug, string $templateId, array $inputs, string $role, bool $acknowledged = false, bool $portsApproved = false, ?int $projectId = null): array
+    {
+        $a = $this->assess($organizationId, "{$slug}.{$organizationId}", $templateId, $inputs, $role, $acknowledged, $portsApproved, $projectId, newServer: true);
+        if (DB::table('services')->where('organization_id', $organizationId)->where('name', $a['name'])->exists()) {
+            throw new InvalidArgumentException("A service called {$a['name']} already exists in this team.");
+        }
+        if (($why = Sites::nameInUse($organizationId, $a['name'])) !== null) {
+            throw new InvalidArgumentException("{$a['name']} cannot be used: {$why}.");
+        }
+        $this->checkDomains($organizationId, $a['def'], $a['effective'], null);
+
+        return $a;
+    }
+
     /** The checks that need no lock. @return array{def: Definition, node: object, name: string, effective: array<string, string>, context: array<string, mixed>, project: int} */
-    private function assess(string $organizationId, string $nodeId, string $templateId, array $inputs, string $role, bool $acknowledged, bool $portsApproved, ?int $projectId): array
+    private function assess(string $organizationId, string $nodeId, string $templateId, array $inputs, string $role, bool $acknowledged, bool $portsApproved, ?int $projectId, bool $newServer = false): array
     {
         $this->authorize($role, 'infrastructure');
-        $node = $this->node($organizationId, $nodeId);
+        $node = $newServer ? (object) ['node_id' => $nodeId, 'role' => null, 'containers_ready_at' => null] : $this->node($organizationId, $nodeId);
         $def = $this->definition($templateId);
+        if ($newServer && $def->runtime !== 'native') {
+            throw new InvalidArgumentException("{$def->name} runs in a container, which needs a server prepared for containers. Install it on an existing server.");
+        }
 
         // What this version cannot do is refused, not skipped.
         if (IncusHost::reserved($node->role ?? null)) {
@@ -180,7 +207,8 @@ final class Services
             throw new InvalidArgumentException(implode('; ', array_map(fn ($k, $m) => "{$k} {$m}", array_keys($errors), $errors)));
         }
         $project = Projects::resolve($organizationId, $projectId);
-        $effective = $this->effective($def, $inputs, NewApplications::publicIp($organizationId, $nodeId));
+        // A server not made yet has no address: the placeholder stands in for it here, and the real one is used when the install runs.
+        $effective = $this->effective($def, $inputs, $newServer ? 'server-address' : NewApplications::publicIp($organizationId, $nodeId));
         $name = $effective['name'];
 
         // The same planning the operation does, so a bad value is refused here and not halfway through an install.

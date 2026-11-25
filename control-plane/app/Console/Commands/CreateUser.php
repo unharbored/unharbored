@@ -5,8 +5,12 @@ declare(strict_types=1);
 namespace App\Console\Commands;
 
 use App\Lib\Auth\Instance;
+use App\Lib\Auth\Org;
+use App\Lib\Auth\Projects;
+use App\Lib\Auth\Roles;
 use App\Models\User;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\DB;
 
 /**
  * user:create — the one account that signs in to the console.
@@ -52,6 +56,15 @@ final class CreateUser extends Command
         if (! Instance::anyAdmin()) {
             Instance::setAdmin($user, true);
             $this->info('This is the first login, so it is the instance administrator.');
+
+            // A new install has the default team in name only (the migration that
+            // seeds its Owner ran before anyone existed): create it, with this person as Owner.
+            if (! DB::table('memberships')->where('organization_id', Org::DEFAULT)->exists()) {
+                DB::table('organizations')->insertOrIgnore(['id' => Org::DEFAULT, 'name' => 'Unharbored', 'created_at' => now(), 'updated_at' => now()]);
+                Projects::ensureDefault(Org::DEFAULT);
+                DB::table('memberships')->insert(['user_id' => $user->id, 'organization_id' => Org::DEFAULT, 'role' => Roles::OWNER, 'created_at' => now(), 'updated_at' => now()]);
+                $this->info('Added to the default team as its Owner.');
+            }
         }
 
         $this->info("Console login ready for {$email}.");

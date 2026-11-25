@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature\Services;
 
+use App\Lib\Providers\Incus\Ingress;
 use App\Lib\Services\Services;
 use App\Lib\Vault\Vault;
 use Illuminate\Support\Facades\DB;
@@ -85,6 +86,40 @@ final class NativeInstallTest extends ServiceTestCase
         $this->expectExceptionMessage('public address is not known');
 
         $this->services()->install('org-1', 'web-1.org-1', 'rustfs', ['name' => 'files'], 'matt@example.com', 'manager', acknowledged: true, dispatch: false);
+    }
+
+    public function test_a_service_on_an_incus_host_routes_through_the_ingress_before_its_certificate_is_asked_for(): void
+    {
+        DB::table('resources')->insert([
+            ['organization_id' => 'org-1', 'type' => 'server', 'slug' => 'web-1', 'provider' => 'incus', 'external_id' => 'web-1', 'state' => 'active', 'desired_state' => 'active',
+                'attributes' => json_encode(['ipv6' => '2001:db8:5:0:1::2']), 'created_at' => now(), 'updated_at' => now()],
+            ['organization_id' => 'org-1', 'type' => 'server', 'slug' => Ingress::SLUG, 'provider' => 'incus', 'external_id' => Ingress::SLUG, 'state' => 'active', 'desired_state' => 'active',
+                'attributes' => json_encode(['ipv4' => '203.0.113.5', 'ipv6' => '2001:db8:5:0:1::1']), 'created_at' => now(), 'updated_at' => now()],
+        ]);
+        DB::table('nodes')->insert(['node_id' => Ingress::nodeId('org-1'), 'organization_id' => 'org-1', 'role' => 'ingress', 'certificate_pem' => 'x',
+            'certificate_expires_at' => now()->addYear(), 'created_at' => now(), 'updated_at' => now()]);
+
+        $made = $this->install();
+
+        $this->assertSame('succeeded', $made['status'], (string) DB::table('operations')->value('error'));
+        $names = $this->recipeNames();
+        $this->assertLessThan(array_search('certificate-service-files', $names, true), array_search('ingress', $names, true), 'the ingress knows the names before Let\'s Encrypt checks them');
+        $this->assertStringContainsString('files-s3.example.com "[2001:db8:5:0:1::2]";', base64_decode($this->steps('ingress')['ingress-http']['content_b64']));
+        $routes = base64_decode($this->steps('ingress', 1)['ingress-http']['content_b64']);
+        $this->assertStringContainsString('files-s3.example.com "[2001:db8:5:0:1::2]";', $routes);
+        $this->assertStringContainsString('files-ui.example.com "[2001:db8:5:0:1::2]";', $routes, 'the second address is routed before its own certificate');
+        $vhost = base64_decode($this->steps('service-vhost-files-9000', 1)['vhost']['content_b64']);
+        $this->assertStringContainsString('listen [::]:10443 ssl http2 proxy_protocol;', $vhost);
+        $this->assertStringContainsString("set_real_ip_from 2001:db8:5:0:1::1;\n    real_ip_header proxy_protocol;", $vhost);
+        $this->assertStringContainsString('listen 443 ssl http2;', $vhost, 'visitors with IPv6 still come straight in');
+    }
+
+    public function test_a_service_on_an_ordinary_server_does_not_touch_an_ingress(): void
+    {
+        $this->install();
+
+        $this->assertNotContains('ingress', $this->recipeNames());
+        $this->assertStringNotContainsString('10443', base64_decode($this->steps('service-vhost-files-9000', 1)['vhost']['content_b64']));
     }
 
     public function test_a_checksum_mismatch_fails_the_install_and_leaves_nothing_running(): void

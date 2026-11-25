@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\SiteSettings;
 
+use App\Lib\Sites\LaravelServices;
 use App\Lib\Sites\Sites;
 use App\Lib\Sites\WorkerScaling;
 use Illuminate\Http\RedirectResponse;
@@ -21,6 +22,18 @@ final class SiteProcessesController extends SiteSettingsBase
         app(Sites::class)->setWorkers($this->row($site), (int) $workers);
 
         return $this->saved('Workers saved. They change on the next deploy.');
+    }
+
+    public function workersOn(Request $request, int $site): RedirectResponse
+    {
+        Gate::authorize('edit');
+        try {
+            app(Sites::class)->setWorkersOn($this->row($site), (string) $request->input('runsOn', ''));
+        } catch (\InvalidArgumentException $e) {
+            throw ValidationException::withMessages(['workers' => $e->getMessage()]);
+        }
+
+        return $this->saved('Saved. It changes on the next deploy.');
     }
 
     public function scaling(Request $request, int $site): RedirectResponse
@@ -62,12 +75,26 @@ final class SiteProcessesController extends SiteSettingsBase
         $port = (string) $request->input('daemonPort', '');
         $path = (string) $request->input('daemonPath', '');
         try {
-            app(Sites::class)->setDaemon($this->row($site), $data['daemonName'], $data['daemonCommand'], 1, trim($port) === '' ? null : (int) $port, trim($path) === '' ? null : $path);
+            $runsOn = (string) $request->input('daemonRunsOn', 'all');
+            app(Sites::class)->setDaemon($this->row($site), $data['daemonName'], $data['daemonCommand'], 1, trim($port) === '' ? null : (int) $port, trim($path) === '' ? null : $path, $runsOn === 'all' ? [] : ['runs_on' => $runsOn]);
         } catch (\InvalidArgumentException $e) {
             throw ValidationException::withMessages(['daemonName' => $e->getMessage()]);
         }
 
         return $this->saved('Daemon saved. It starts on the next deploy.');
+    }
+
+    public function addPreset(Request $request, int $site): RedirectResponse
+    {
+        Gate::authorize('edit');
+        $data = $request->validate(['preset' => 'required|string|max:30', 'fields' => 'sometimes|array']);
+        try {
+            app(LaravelServices::class)->add($this->row($site), $data['preset'], $data['fields'] ?? []);
+        } catch (\InvalidArgumentException $e) {
+            throw ValidationException::withMessages(['preset' => $e->getMessage()]);
+        }
+
+        return $this->saved('Added. It starts on the next deploy.');
     }
 
     public function removeDaemon(Request $request, int $site): RedirectResponse

@@ -58,7 +58,7 @@ If the server is gone, fetch the newest snapshot from the Spaces bucket
 with any S3 client and a Spaces key you make for the purpose. Its key in the
 vault went with the server. You also need `VAULT_MASTER_KEY` and the `.env`.
 
-On a fresh Ubuntu 24.04 Droplet (any size; the smallest works), with your
+On a fresh Ubuntu 24.04 or 26.04 server (any size; the smallest works), with your
 SSH key and the cloud firewall `cm-mgmt-fw` attached (22 from you, 80 and
 443 and 9443 from anywhere):
 
@@ -77,6 +77,15 @@ after.
 
 Without `RESTORE_*`, the same command builds a new, empty control plane with
 fresh keys.
+
+### PHP version
+
+On 24.04 setup installs PHP 8.4 from the ondrej PPA. 26.04 has no 8.4 in either
+the distribution or the PPA, so setup uses the distribution's PHP 8.5
+(`composer.json` allows `^8.4`). Units, cron and nginx use the unversioned
+`php` and `/run/php/php-fpm.sock`, so they follow whichever is installed.
+The suite and the original production server run 8.4; a 26.04 panel
+(`app.unharbored.com`, 2026-11-24) runs 8.5, which has had far less use.
 
 ### What was tested
 

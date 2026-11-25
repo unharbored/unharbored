@@ -634,9 +634,12 @@ final class Sites
 
         // nginx's default allows names up to about 50 characters; an
         // application's sslip.io name on its balancer is often longer.
-        $steps[] = ['id' => 'nginx-names', 'type' => 'file', 'path' => '/etc/nginx/conf.d/00-server-names.conf',
-            'content_b64' => base64_encode(ServerStack::NGINX_NAMES), 'mode' => '0644'];
-        array_push($steps, ...$this->vhostSteps($site));
+        // A worker server serves nothing: no web server settings for the application there.
+        if (($site->node_role ?? self::ROLE_WEB) !== self::ROLE_WORKER) {
+            $steps[] = ['id' => 'nginx-names', 'type' => 'file', 'path' => '/etc/nginx/conf.d/00-server-names.conf',
+                'content_b64' => base64_encode(ServerStack::NGINX_NAMES), 'mode' => '0644'];
+            array_push($steps, ...$this->vhostSteps($site));
+        }
 
         return ['name' => "site-setup-{$site->name}", 'steps' => $steps];
     }
@@ -1665,7 +1668,15 @@ final class Sites
      * it, WebSockets included, so a browser reaches it over the site's
      * certificate and the port itself stays on loopback.
      */
-    public function setDaemon(stdClass $site, string $name, string $command, int $processes = 1, ?int $port = null, ?string $path = null): stdClass
+    /**
+     * $extra is for what a Laravel service preset needs and a typed process rarely does:
+     * `stopwait` (seconds supervisor lets it finish a job before killing it), `reload` (an
+     * artisan command that moves it onto a new release gracefully, instead of supervisor
+     * restarting it and the deploy waiting out `stopwait`), and `preset` (which one made it).
+     *
+     * @param  array{stopwait?: int, reload?: string, preset?: string, runs_on?: string}  $extra
+     */
+    public function setDaemon(stdClass $site, string $name, string $command, int $processes = 1, ?int $port = null, ?string $path = null, array $extra = []): stdClass
     {
         \App\Lib\Containers\ContainerApps::refuse($site, 'background processes');
         if (! preg_match('/^[a-z0-9][a-z0-9-]{0,29}$/', $name) || in_array($name, ['worker', 'reverb'], true)) {
@@ -1699,10 +1710,38 @@ final class Sites
             throw new InvalidArgumentException('The command uses {port}, so give the port.');
         }
 
-        $daemons = array_values(array_filter(self::daemons($site), fn ($d) => $d['name'] !== $name));
-        $daemons[] = ['name' => $name, 'command' => trim($command), 'processes' => $processes] + ($port !== null ? ['port' => $port, 'path' => $path] : []);
+        if (isset($extra['stopwait']) && ($extra['stopwait'] < 1 || $extra['stopwait'] > 7200)) {
+            throw new InvalidArgumentException('Stop wait must be between 1 and 7200 seconds.');
+        }
+        // Run as an artisan argument, never through a shell; the pattern still keeps it to a command name.
+        if (isset($extra['reload']) && ! preg_match('/^[a-z][a-z0-9:_-]{0,60}$/', $extra['reload'])) {
+            throw new InvalidArgumentException('Reload must be an artisan command name.');
+        }
+        if (isset($extra['runs_on']) && ! in_array($extra['runs_on'], ['all', self::ROLE_WEB, self::ROLE_WORKER], true)) {
+            throw new InvalidArgumentException('A process runs on all servers, web servers or worker servers.');
+        }
+        $extra = array_intersect_key($extra, ['stopwait' => 1, 'reload' => 1, 'preset' => 1, 'runs_on' => 1]);
 
-        return $this->saveDaemons($site, $daemons, 'site.daemon_set', ['daemon' => $name, 'command' => trim($command), 'processes' => $processes, 'port' => $port, 'path' => $path]);
+        $daemons = array_values(array_filter(self::daemons($site), fn ($d) => $d['name'] !== $name));
+        $daemons[] = ['name' => $name, 'command' => trim($command), 'processes' => $processes] + ($port !== null ? ['port' => $port, 'path' => $path] : []) + $extra;
+
+        return $this->saveDaemons($site, $daemons, 'site.daemon_set', ['daemon' => $name, 'command' => trim($command), 'processes' => $processes, 'port' => $port, 'path' => $path] + $extra);
+    }
+
+    /** The first loopback port from $from up that nothing on the site's server uses, for a process that listens on one. */
+    public function freePort(stdClass $site, string $name, int $from): int
+    {
+        for ($port = $from; $port < $from + 200; $port++) {
+            try {
+                $this->checkPort($site, $name, $port);
+
+                return $port;
+            } catch (InvalidArgumentException) {
+                continue;
+            }
+        }
+
+        throw new InvalidArgumentException("No free port from {$from} up on this server.");
     }
 
     /** A port on loopback that nothing else on the server uses: not a service's, not the platform's band, not another application's. */
@@ -1878,6 +1917,27 @@ final class Sites
         return 20000 + (int) $site->id;
     }
 
+    /** Which servers run the built-in queue workers: all of them, the web servers, or the worker servers. */
+    public function setWorkersOn(stdClass $site, string $on): stdClass
+    {
+        if (! in_array($on, ['all', self::ROLE_WEB, self::ROLE_WORKER], true)) {
+            throw new InvalidArgumentException('Queue workers run on all servers, web servers or worker servers.');
+        }
+        DB::table('sites')->where('id', $site->id)->update(['workers_on' => $on, 'updated_at' => now()]);
+        $this->markPending($site);
+
+        $this->audit->record(
+            organizationId: $site->organization_id,
+            actor: Actor::system('control-plane'),
+            action: 'site.workers_placed',
+            resourceType: 'site',
+            resourceId: "{$site->node_id}/{$site->name}",
+            metadata: ['runs_on' => $on],
+        );
+
+        return $this->find($site->node_id, $site->name);
+    }
+
     public function setWorkers(stdClass $site, int $workers): stdClass
     {
         if ($workers > 0) {
@@ -1951,12 +2011,51 @@ final class Sites
         return array_values(array_unique([$site->node_id, ...DB::table('site_nodes')->where('site_id', $site->id)->orderBy('id')->pluck('node_id')->all()]));
     }
 
-    /** The same site, pointed at one of its servers. */
+    public const ROLE_WEB = 'web';
+
+    public const ROLE_WORKER = 'worker';
+
+    /**
+     * The servers that serve the application: the primary, and every other one not made a worker.
+     * Certificates, the web server's settings, the domain and the load balancer concern these.
+     *
+     * @return list<string>
+     */
+    public static function webNodes(stdClass $site): array
+    {
+        return array_values(array_diff(self::nodes($site), self::workerNodes($site)));
+    }
+
+    /**
+     * The servers that run processes and no web server. The primary is never one.
+     *
+     * @return list<string>
+     */
+    public static function workerNodes(stdClass $site): array
+    {
+        return DB::table('site_nodes')->where('site_id', $site->id)->where('role', self::ROLE_WORKER)->where('node_id', '!=', $site->home_node_id ?? $site->node_id)
+            ->orderBy('id')->pluck('node_id')->all();
+    }
+
+    /** Puts a server on the site as a web or a worker server. The primary is web and cannot be made a worker. */
+    public static function addNode(stdClass $site, string $nodeId, string $role = self::ROLE_WEB): void
+    {
+        if (! in_array($role, [self::ROLE_WEB, self::ROLE_WORKER], true)) {
+            throw new InvalidArgumentException('A server is a web server or a worker server.');
+        }
+        if ($role === self::ROLE_WORKER && $nodeId === (string) ($site->home_node_id ?? $site->node_id)) {
+            throw new InvalidArgumentException('The primary serves the application, so it cannot be a worker server.');
+        }
+        DB::table('site_nodes')->insertOrIgnore(['site_id' => $site->id, 'node_id' => $nodeId, 'role' => $role, 'created_at' => now(), 'updated_at' => now()]);
+    }
+
+    /** The same site, pointed at one of its servers, which says whether it is a web or a worker server there (`node_role`). */
     public static function on(stdClass $site, string $nodeId): stdClass
     {
         $copy = clone $site;
         $copy->home_node_id = self::home($site);
         $copy->node_id = $nodeId;
+        $copy->node_role = in_array($nodeId, self::workerNodes($site), true) ? self::ROLE_WORKER : self::ROLE_WEB;
 
         return $copy;
     }

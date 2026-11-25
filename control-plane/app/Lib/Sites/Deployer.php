@@ -490,7 +490,21 @@ final class Deployer
             ];
         }
 
-        // Daemons have no graceful restart signal of their own, so supervisor
+        // Processes that have one (Horizon's terminate, the queue's restart) are told it, once each.
+        // queue:restart was sent above.
+        $reloads = array_values(array_unique(array_filter(array_column($programs, 'reload'), fn ($r) => $r !== 'queue:restart')));
+        foreach ($reloads as $reload) {
+            $steps[] = [
+                'id' => 'reload-'.preg_replace('/[^a-z0-9]+/', '-', $reload),
+                'type' => 'command',
+                // Not fatal: a service whose package is not installed shows as a crash-looping process, not a failed deploy.
+                'name' => 'sh',
+                'args' => ['-c', "runuser -u {$user} -- {$binary} {$current}/artisan {$reload} || true"],
+                'description' => "{$reload}: they finish what they are doing and start again on the live release",
+            ];
+        }
+
+        // The rest have no graceful restart signal of their own, so supervisor
         // restarts them. They resolve current as they start, which is now
         // the new release.
         foreach ($programs as $program) {
@@ -552,7 +566,7 @@ final class Deployer
     /**
      * Every supervisor program the site runs.
      *
-     * @return list<array{name: string, command: string, processes: int, stopwait: int, restart: bool}>
+     * @return list<array{name: string, command: string, processes: int, stopwait: int, restart: bool, runs_on?: string, reload?: string, port?: int}>
      */
     private function programs(stdClass $site): array
     {
@@ -567,23 +581,30 @@ final class Deployer
             // stopwaitsecs matches --max-time so a stop lets a long job
             // finish. queue:restart, not supervisor, moves these on deploy.
             $programs[] = ['name' => "cm-{$site->name}-worker", 'command' => "{$php} {$artisan} queue:work --sleep=3 --tries=3 --max-time=3600",
-                'processes' => $workers, 'stopwait' => 3600, 'restart' => false];
+                'processes' => $workers, 'stopwait' => 3600, 'restart' => false, 'runs_on' => (string) ($site->workers_on ?? 'all')];
         }
 
         if (Runtimes::has($site, 'workers') && (bool) ($site->reverb ?? false)) {
             $port = Sites::reverbPort($site);
             $programs[] = ['name' => "cm-{$site->name}-reverb", 'command' => "{$php} {$artisan} reverb:start --host=127.0.0.1 --port={$port}",
-                'processes' => 1, 'stopwait' => 10, 'restart' => true];
+                'processes' => 1, 'stopwait' => 10, 'restart' => true, 'runs_on' => Sites::ROLE_WEB];
         }
 
         foreach (Sites::daemons($site) as $daemon) {
             $command = preg_replace('/^php /', "{$php} ", $daemon['command']);
             $port = isset($daemon['port']) ? (int) $daemon['port'] : null;
             $programs[] = ['name' => "cm-{$site->name}-{$daemon['name']}", 'command' => $port !== null ? str_replace('{port}', (string) $port, (string) $command) : (string) $command,
-                'processes' => (int) $daemon['processes'], 'stopwait' => 60, 'restart' => true] + ($port !== null ? ['port' => $port] : []);
+                'runs_on' => (string) ($daemon['runs_on'] ?? 'all'),
+                'processes' => (int) $daemon['processes'], 'stopwait' => (int) ($daemon['stopwait'] ?? 60),
+                // With a reload command the process is told to leave when it is idle, and supervisor starts it again:
+                // restarting it would hold the deploy for as long as a job may run.
+                'restart' => ! isset($daemon['reload'])] + (isset($daemon['reload']) ? ['reload' => (string) $daemon['reload']] : []) + ($port !== null ? ['port' => $port] : []);
         }
 
-        return $programs;
+        // A server runs the processes meant for its role: a worker server none of the web-only ones, such as Reverb.
+        $role = (string) ($site->node_role ?? Sites::ROLE_WEB);
+
+        return array_values(array_filter($programs, fn (array $p) => in_array($p['runs_on'] ?? 'all', ['all', $role], true)));
     }
 
     /**
@@ -646,7 +667,7 @@ CONF;
         $this->recipe($site, $this->sites->certificateRecipe($site), 180);
 
         $site = $this->sites->markTls($site);
-        foreach (Sites::nodes($site) as $node) {
+        foreach (Sites::webNodes($site) as $node) {
             $this->recipe(Sites::on($site, $node), $this->sites->setupRecipe(Sites::on($site, $node)));
         }
         try {
@@ -745,7 +766,7 @@ CONF;
      */
     private function retireCustomFiles(stdClass $site, string $domain, bool $loud = false): void
     {
-        foreach (Sites::nodes($site) as $node) {
+        foreach (Sites::webNodes($site) as $node) {
             $this->node = $node;
             try {
                 $this->recipe(Sites::on($site, $node), $this->sites->retireCustomCertificateRecipe($domain));
@@ -830,7 +851,7 @@ CONF;
         $this->syncIngress($site);
         // The other servers learn the new name first: behind a balancer, the
         // certificate challenge for it may reach any of them.
-        foreach (array_slice(Sites::nodes($site), 1) as $node) {
+        foreach (array_slice(Sites::webNodes($site), 1) as $node) {
             $this->recipe(Sites::on($site, $node), $this->sites->setupRecipe(Sites::on($site, $node)));
         }
 
@@ -1304,7 +1325,7 @@ CONF;
     public function applyWebServer(stdClass $site, ?Closure $log = null): void
     {
         $this->log = $log;
-        foreach (Sites::nodes($site) as $node) {
+        foreach (Sites::webNodes($site) as $node) {
             $on = Sites::on($site, $node);
             $this->recipe($on, $this->sites->vhostRecipe($on));
             $this->say('nginx', 'settings applied and nginx reloaded on '.(strstr($node, '.', true) ?: $node));

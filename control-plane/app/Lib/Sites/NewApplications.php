@@ -425,7 +425,7 @@ final class NewApplications
         return json_decode((string) $attributes, true)['region'] ?? null;
     }
 
-    private function freeSlug(string $organizationId, string $base): string
+    public static function freeSlug(string $organizationId, string $base): string
     {
         $slug = $base;
         for ($i = 2; DB::table('nodes')->where('node_id', "{$slug}.{$organizationId}")->exists()

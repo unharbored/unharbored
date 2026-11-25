@@ -21,7 +21,7 @@ const labelClass = 'font-mono text-[10px] tracking-[0.18em] text-muted uppercase
  * everything that will be created. Secret inputs stay in this page, are sent only to check and create, and
  * are cleared when the person goes back.
  */
-const props = defineProps({ template: String, form: Object, servers: Array });
+const props = defineProps({ template: String, form: Object, servers: Array, newServer: { type: Object, default: () => ({}) } });
 
 const step = ref(1);
 const errors = ref({});
@@ -31,6 +31,13 @@ const servers = ref(props.servers);
 const values = reactive({});
 const secrets = reactive({});
 const s = reactive({ node: '', project: '', acknowledged: false, portsApproved: false });
+
+// A server made for this service: what the chosen provider offers, filtered to sizes big enough.
+const NEW = '__new';
+const providers = Object.keys(props.newServer);
+const n = reactive({ provider: providers[0] ?? '', region: '', size: '' });
+const choice = computed(() => props.newServer[n.provider] ?? { regions: {}, sizes: {} });
+watch(() => n.provider, () => { n.region = choice.value.region ?? ''; n.size = choice.value.size ?? ''; }, { immediate: true });
 
 // Every input starts blank: blank means the default.
 for (const f of props.form.fields ?? []) {
@@ -52,7 +59,7 @@ async function recheck() {
     if (ok) servers.value = data;
 }
 
-const body = () => ({ template: props.template, values, secrets, node: s.node, project: s.project, acknowledged: s.acknowledged, portsApproved: s.portsApproved });
+const body = () => ({ template: props.template, values, secrets, node: s.node === NEW ? '' : s.node, newServer: s.node === NEW ? { ...n } : undefined, project: s.project, acknowledged: s.acknowledged, portsApproved: s.portsApproved });
 async function toReview() {
     busy.value = true;
     const { ok, data, errors: e } = await postJson('/services/new/check', body());
@@ -109,7 +116,13 @@ async function create() {
           <label v-for="sv in servers" :key="sv.id" :class="check"><input v-model="s.node" type="radio" :value="sv.id" :disabled="!sv.fits"> <span>{{ sv.name }} <span class="text-[13px] text-faint">{{ sv.memory }} · {{ sv.disk }}</span>
             <template v-if="!sv.fits"> <span class="text-[13px] text-failed">Does not fit: {{ sv.reason }}</span><template v-if="sv.prepare && form.canInstall"> <a class="text-[13px]" :href="`/server/containers?node=${sv.id}`" target="_blank" rel="noopener">Prepare this server for containers first (opens in a new tab)</a></template></template>
             <template v-else> <span class="text-[13px] text-accent">fits</span></template></span></label>
-          <span v-if="servers.length === 0" class="text-[13px] text-faint">This team has no servers yet.</span>
+          <label v-if="providers.length > 0" :class="check"><input v-model="s.node" type="radio" :value="NEW"> <span>A new server for this service <span class="text-[13px] text-faint">made when you press Create, and billed by its provider</span></span></label>
+          <div v-if="s.node === NEW" class="grid gap-3 border-l border-line pl-4 sm:grid-cols-3">
+            <Field label="Provider" v-slot="{ id }"><select :id="id" v-model="n.provider"><option v-for="p in providers" :key="p" :value="p">{{ newServer[p].label }}</option></select></Field>
+            <Field label="Region" v-slot="{ id }"><select :id="id" v-model="n.region"><option v-for="(label, slug) in choice.regions" :key="slug" :value="slug">{{ label }}</option></select></Field>
+            <Field label="Size" :hint="`Big enough for ${form.memory} of memory.`" v-slot="{ id }"><select :id="id" v-model="n.size"><option v-for="(label, slug) in choice.sizes" :key="slug" :value="slug">{{ label }}</option></select></Field>
+          </div>
+          <span v-if="servers.length === 0 && providers.length === 0" class="text-[13px] text-faint">This team has no servers yet.</span>
           <span v-if="anyNotFitting" class="text-[13px] text-faint">Something to fix on a server? What you typed here is kept. <Btn small @click="recheck">Check the servers again</Btn></span>
           <FormError :message="errors.node" />
         </fieldset>
@@ -133,12 +146,13 @@ async function create() {
         <Notice v-if="review.warning" alert>{{ review.warning }}</Notice>
         <dl class="m-0 grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-x-[22px] gap-y-4">
           <div class="flex min-w-0 flex-col gap-1 border-t border-dashed border-line pt-[11px] [&_dd]:m-0 [&_dd]:break-words"><dt><h2 class="m-0 font-mono text-[9.5px] font-normal tracking-[0.18em] text-muted uppercase">Service</h2></dt><dd class="text-[15px] font-semibold text-ink-strong">{{ review.service }}</dd><dd class="text-[13px] text-faint">{{ review.template }} version {{ review.version }}<template v-if="review.label"> · {{ review.label }}</template></dd></div>
-          <div class="flex min-w-0 flex-col gap-1 border-t border-dashed border-line pt-[11px] [&_dd]:m-0 [&_dd]:break-words"><dt><h2 class="m-0 font-mono text-[9.5px] font-normal tracking-[0.18em] text-muted uppercase">Server</h2></dt><dd class="text-[15px] font-semibold text-ink-strong">{{ review.server }}</dd><dd class="text-[13px] text-faint">{{ review.ip ?? 'public address not known' }}</dd></div>
+          <div class="flex min-w-0 flex-col gap-1 border-t border-dashed border-line pt-[11px] [&_dd]:m-0 [&_dd]:break-words"><dt><h2 class="m-0 font-mono text-[9.5px] font-normal tracking-[0.18em] text-muted uppercase">Server</h2></dt><dd class="text-[15px] font-semibold text-ink-strong">{{ review.server }}</dd><dd class="text-[13px] text-faint">{{ review.ip ?? (review.newServer ? 'made when you press Create' : 'public address not known') }}</dd></div>
           <div class="flex min-w-0 flex-col gap-1 border-t border-dashed border-line pt-[11px] [&_dd]:m-0 [&_dd]:break-words"><dt><h2 class="m-0 font-mono text-[9.5px] font-normal tracking-[0.18em] text-muted uppercase">Project</h2></dt><dd class="text-[15px] font-semibold text-ink-strong">{{ review.project }}</dd></div>
           <div class="flex min-w-0 flex-col gap-1 border-t border-dashed border-line pt-[11px] [&_dd]:m-0 [&_dd]:break-words"><dt><h2 class="m-0 font-mono text-[9.5px] font-normal tracking-[0.18em] text-muted uppercase">Data folder</h2></dt><dd class="text-[15px] font-semibold text-ink-strong font-mono">{{ review.data }}</dd><dd v-if="review.storage" class="text-[13px] text-faint">{{ review.storage }} of storage</dd></div>
         </dl>
         <h3 class="m-0 text-base font-semibold text-ink-strong">What will be created</h3>
         <ul class="m-0 flex list-disc flex-col gap-1.5 pl-5">
+          <li v-if="review.newServer">{{ review.server }}, set up first and billed by its provider until you destroy it. Free names are made from its address once it exists.</li>
           <li>A service called <b>{{ review.service }}</b>, started and kept running by the server's service manager.</li>
           <li v-for="e in review.endpoints ?? []" :key="e.domain">Address <b>https://{{ e.domain }}</b> (port {{ e.port }} on the server, behind the web server) with its own certificate.</li>
           <li v-if="(review.secrets ?? []).length > 0">Generated credentials ({{ review.secrets.join(', ') }}), kept in the vault. You can reveal them on the service page; each reveal is recorded.</li>
@@ -151,11 +165,13 @@ async function create() {
           <li v-else>Downloaded from <b>{{ review.download?.host }}</b><template v-if="review.download?.sha256">, checked against SHA-256 <span class="font-mono text-[13px]">{{ review.download.sha256 }}</span>, version {{ review.version }} of the template </template>.</li>
           <li v-if="review.backup">Backups: you chose <b>{{ review.backup }}</b>.<template v-if="review.backup === 'none'"> It is left out of the nightly backup; you can still press Back up now on its page.</template><template v-else-if="review.backup === 'spaces'"> Every night its data is archived on the server and copied to the backup bucket (set one up with backup:offsite; without it the copy stays on the server), and 14 days are kept.</template><template v-else> Every night its data is archived on the server's own disk and 14 days are kept; that protects against a bad update or a mistake, not against losing the server.</template> A backup is also taken before every update and every restore.</li>
         </ul>
+        <template v-if="(review.dns ?? []).length > 0">
         <h3 class="m-0 text-base font-semibold text-ink-strong">DNS records needed</h3>
         <ul class="m-0 flex list-disc flex-col gap-1.5 pl-5">
           <li v-for="d in review.dns ?? []" :key="d.domain"><span class="font-mono">{{ d.domain }}</span> · {{ d.type }} record <template v-if="d.value">→ <span class="font-mono">{{ d.value }}</span></template><template v-else>→ the server's public address</template></li>
         </ul>
         <p class="text-[13px] text-faint">DNS must point at the server before the certificate step can succeed. If it does not yet, the install stops there; point the records and install again.</p>
+        </template>
         <template v-if="(review.extraPorts ?? []).length > 0">
           <h3 class="m-0 text-base font-semibold text-ink-strong">Extra ports you approved</h3>
           <ul class="m-0 flex list-disc flex-col gap-1.5 pl-5"><li v-for="p in review.extraPorts" :key="p.port">{{ p.port }}/{{ p.proto }} · {{ p.label }}</li></ul>

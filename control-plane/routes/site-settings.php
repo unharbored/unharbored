@@ -57,6 +57,7 @@ Route::prefix('/site/settings/{site}')->whereNumber('site')->name('site.settings
 
     // Servers and scaling
     Route::post('servers/add', [SiteServersController::class, 'add'])->name('servers.add');
+    Route::post('servers/new', [SiteServersController::class, 'create'])->name('servers.new');
     Route::post('servers/remove', [SiteServersController::class, 'remove'])->name('servers.remove');
     Route::post('balancer', [SiteServersController::class, 'balancer'])->name('balancer');
     Route::post('pool', [SiteServersController::class, 'pool'])->name('pool');
@@ -71,6 +72,8 @@ Route::prefix('/site/settings/{site}')->whereNumber('site')->name('site.settings
     Route::post('workers/fixed', [SiteProcessesController::class, 'fixed'])->name('workers.fixed');
     Route::post('reverb', [SiteProcessesController::class, 'reverb'])->name('reverb');
     Route::post('daemons', [SiteProcessesController::class, 'addDaemon'])->name('daemons.add');
+    Route::post('workers/runs-on', [SiteProcessesController::class, 'workersOn'])->name('workers.runs_on');
+    Route::post('daemons/preset', [SiteProcessesController::class, 'addPreset'])->name('daemons.preset');
     Route::post('daemons/remove', [SiteProcessesController::class, 'removeDaemon'])->name('daemons.remove');
 
     // Scheduler and custom jobs
