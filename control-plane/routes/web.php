@@ -53,6 +53,7 @@ Route::middleware(['auth', 'member'])->group(function () {
     Route::delete('/account/token/{provider}', [AccountController::class, 'disconnectToken'])->name('account.token.disconnect');
     Route::post('/account/tailscale', [AccountController::class, 'connectTailscale'])->name('account.tailscale.connect');
     Route::delete('/account/tailscale', [AccountController::class, 'disconnectTailscale'])->name('account.tailscale.disconnect');
+    Route::post('/account/providers/dns/domains', [AccountController::class, 'dnsDomains'])->name('account.providers.dns-domains');
     Route::post('/account/providers/{kind}', [AccountController::class, 'connectProvider'])->where('kind', 'cloud|dns')->name('account.providers.connect');
     Route::post('/account/providers/{kind}/expiry', [AccountController::class, 'providerExpiry'])->where('kind', 'cloud|dns')->name('account.providers.expiry');
     Route::post('/account/providers/{kind}/test', [AccountController::class, 'testProvider'])->where('kind', 'cloud|dns')->name('account.providers.test');

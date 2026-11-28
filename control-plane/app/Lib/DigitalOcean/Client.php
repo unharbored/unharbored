@@ -192,7 +192,7 @@ final class Client
                     'DigitalOcean rejected our credentials for this account (%d). '
                     .'The grant may have been revoked by the customer.',
                     $status
-                ));
+                ), $status);
             }
 
             if ($status === 429) {

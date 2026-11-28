@@ -1137,14 +1137,15 @@ final class Sites
      *
      * @return array{name: string, steps: list<array<string, mixed>>}
      */
-    public function certificateRecipe(stdClass $site): array
+    public function certificateRecipe(stdClass $site, array $aliases = []): array
     {
+        $names = array_merge(['-d', $site->domain], ...array_map(fn ($a) => ['-d', $a], $aliases));
         return ['name' => "certificate-{$site->name}", 'steps' => [[
             'id' => 'certbot',
             'type' => 'command',
             'name' => 'certbot',
             'args' => ['certonly', '--webroot', '-w', ServerStack::ACME_WEBROOT,
-                '--cert-name', $site->domain, '-d', $site->domain,
+                '--cert-name', $site->domain, ...$names,
                 '--non-interactive', '--agree-tos', '--register-unsafely-without-email',
                 '--deploy-hook', 'systemctl reload nginx'],
             'unless' => ['test', '-f', "/etc/letsencrypt/live/{$site->domain}/fullchain.pem"],

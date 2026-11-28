@@ -6,6 +6,7 @@ namespace App\Lib\Dns;
 
 use App\Lib\Audit\Actor;
 use App\Lib\Audit\AuditLog;
+use App\Lib\Templates\Definition;
 use App\Lib\Vault\Vault;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Http\Client\PendingRequest;
@@ -16,7 +17,7 @@ use SensitiveParameter;
  * DNS records at Spaceship, for names Unharbored makes and removes itself
  * (a pull request's preview on a server of its own). The key should carry
  * only dnsrecords:read and dnsrecords:write; it is kept in the vault, with
- * the domain it may change.
+ * the domains it may change.
  *
  * API: https://docs.spaceship.dev/ (DNS records). 300 requests per domain
  * per 5 minutes; records match by type and name.
@@ -37,51 +38,106 @@ final class Spaceship
         private readonly AuditLog $audit,
     ) {}
 
-    /** The domain the organisation's key may change, or null when none is connected. */
-    public function domain(string $organizationId): ?string
+    /** The most domains one key is kept for. */
+    public const MAX_DOMAINS = 20;
+
+    /**
+     * The domains the organisation's key may change, none when it is not connected. They are kept in the vault
+     * as one comma separated entry.
+     *
+     * @return list<string>
+     */
+    public function domains(string $organizationId): array
     {
-        return $this->vault->get($organizationId, self::DOMAIN);
+        return array_values(array_filter(explode(',', (string) $this->vault->get($organizationId, self::DOMAIN))));
     }
 
     /**
-     * Checks a key against the domain's records, then keeps it. Nothing is
-     * stored when Spaceship refuses it.
+     * What a person typed (names separated by commas, spaces or new lines) as a clean list: lower case, no repeats.
      *
-     * @return int How many records the domain has.
+     * @return list<string>
+     *
+     * @throws RuntimeException when there are none, too many, or one is not a domain name
      */
-    public function connect(string $organizationId, string $domain, #[SensitiveParameter] string $key, #[SensitiveParameter] string $secret): int
+    public static function parseDomains(string $typed): array
     {
-        $domain = strtolower(trim($domain));
-        $count = count($this->list($this->client($key, $secret), $domain));
+        $names = array_values(array_unique(array_filter(preg_split('/[\s,]+/', strtolower($typed)) ?: [], fn ($n) => $n !== '')));
+        if ($names === [] || count($names) > self::MAX_DOMAINS) {
+            throw new RuntimeException('Give one to '.self::MAX_DOMAINS.' domains, such as example.com.');
+        }
+        foreach ($names as $name) {
+            if (! Definition::isHostname($name) || ! str_contains($name, '.')) {
+                throw new RuntimeException("{$name} is not a domain name such as example.com.");
+            }
+        }
+
+        return $names;
+    }
+
+    /**
+     * Checks a key against each domain's records, then keeps it. Nothing is
+     * stored when Spaceship refuses it for any of them.
+     *
+     * @param  string  $domains  one or several, separated by commas or spaces
+     * @return int How many records the domains have between them.
+     */
+    public function connect(string $organizationId, string $domains, #[SensitiveParameter] string $key, #[SensitiveParameter] string $secret): int
+    {
+        $names = self::parseDomains($domains);
+        $count = $this->check($this->client($key, $secret), $names);
         $this->vault->put($organizationId, self::KEY, $key);
         $this->vault->put($organizationId, self::SECRET, $secret);
-        $this->vault->put($organizationId, self::DOMAIN, $domain);
-        $this->audit->record($organizationId, Actor::system('control-plane'), 'dns.connected', resourceType: 'domain', resourceId: $domain,
+        $this->vault->put($organizationId, self::DOMAIN, implode(',', $names));
+        $this->audit->record($organizationId, Actor::system('control-plane'), 'dns.connected', resourceType: 'domain', resourceId: implode(',', $names),
             metadata: ['provider' => 'spaceship', 'records' => $count]);
 
         return $count;
     }
 
+    /**
+     * Changes which domains the saved key is used for, checking each with it. The key is not asked for again,
+     * and nothing changes when Spaceship refuses it for any domain.
+     *
+     * @return int How many records the domains have between them.
+     */
+    public function setDomains(string $organizationId, string $domains): int
+    {
+        $names = self::parseDomains($domains);
+        $count = $this->check($this->clientFor($organizationId), $names);
+        $before = $this->domains($organizationId);
+        $this->vault->put($organizationId, self::DOMAIN, implode(',', $names));
+        $this->audit->record($organizationId, Actor::system('control-plane'), 'dns.domains_changed', resourceType: 'domain', resourceId: implode(',', $names),
+            metadata: ['provider' => 'spaceship', 'before' => $before, 'records' => $count]);
+
+        return $count;
+    }
+
+    /** @param list<string> $names @return int the records the domains have between them */
+    private function check(PendingRequest $client, array $names): int
+    {
+        return array_sum(array_map(fn ($name) => count($this->list($client, $name)), $names));
+    }
+
     /** Forgets the key, secret and domain. Records already made stay at Spaceship. */
     public function disconnect(string $organizationId): void
     {
-        $domain = $this->domain($organizationId);
+        $domains = implode(',', $this->domains($organizationId));
         foreach ([self::KEY, self::SECRET, self::DOMAIN] as $name) {
             $this->vault->forget($organizationId, $name);
         }
-        $this->audit->record($organizationId, Actor::system('control-plane'), 'dns.disconnected', resourceType: 'domain', resourceId: (string) $domain, metadata: ['provider' => 'spaceship']);
+        $this->audit->record($organizationId, Actor::system('control-plane'), 'dns.disconnected', resourceType: 'domain', resourceId: $domains, metadata: ['provider' => 'spaceship']);
     }
 
-    /** @return list<array{type: string, name: string, address: ?string, ttl: ?int}> */
-    public function records(string $organizationId): array
+    /** The records of one connected domain. @return list<array{type: string, name: string, address: ?string, ttl: ?int}> */
+    public function records(string $organizationId, string $domain): array
     {
-        return $this->list($this->clientFor($organizationId), $this->domainOrFail($organizationId));
+        return $this->list($this->clientFor($organizationId), $this->connected($organizationId, $domain));
     }
 
-    /** Creates the record, or changes it if one of that type and name exists. */
-    public function set(string $organizationId, string $type, string $name, string $address, int $ttl = 300): void
+    /** Creates the record in $domain, or changes it if one of that type and name exists. */
+    public function set(string $organizationId, string $domain, string $type, string $name, string $address, int $ttl = 300): void
     {
-        $domain = $this->domainOrFail($organizationId);
+        $domain = $this->connected($organizationId, $domain);
         $this->clientFor($organizationId)->put(self::API."/dns/records/{$domain}", [
             'force' => true,
             'items' => [['type' => $type, 'name' => $name, 'address' => $address, 'ttl' => $ttl]],
@@ -91,9 +147,9 @@ final class Spaceship
     }
 
     /** Removes the record; one already gone is not an error. */
-    public function delete(string $organizationId, string $type, string $name, string $address): void
+    public function delete(string $organizationId, string $domain, string $type, string $name, string $address): void
     {
-        $domain = $this->domainOrFail($organizationId);
+        $domain = $this->connected($organizationId, $domain);
         $response = $this->clientFor($organizationId)->send('DELETE', self::API."/dns/records/{$domain}", [
             'json' => [['type' => $type, 'name' => $name, 'address' => $address]],
         ]);
@@ -143,8 +199,11 @@ final class Spaceship
         return $this->http->acceptJson()->asJson()->timeout(20)->withHeaders(['X-API-Key' => $key, 'X-API-Secret' => $secret]);
     }
 
-    private function domainOrFail(string $organizationId): string
+    /** The domain, when it is one of the connected ones. */
+    private function connected(string $organizationId, string $domain): string
     {
-        return $this->domain($organizationId) ?? throw new RuntimeException('No Spaceship domain is connected. Run dns:connect.');
+        $domain = strtolower(trim($domain));
+
+        return in_array($domain, $this->domains($organizationId), true) ? $domain : throw new RuntimeException("{$domain} is not one of the Spaceship domains connected.");
     }
 }

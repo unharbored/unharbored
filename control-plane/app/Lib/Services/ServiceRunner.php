@@ -122,21 +122,22 @@ final class ServiceRunner
      *
      * @param  Closure(array<string, mixed>, int): void  $apply
      */
-    private function endpoint(object $service, array $c, int $port, string $domain, Closure $apply, Closure $log): void
+    private function endpoint(object $service, array $c, int $port, string $domains, Closure $apply, Closure $log): void
     {
+        [$domain, $aliases] = [Definition::domains($domains)[0], array_slice(Definition::domains($domains), 1)];
         DB::table('service_endpoints')->updateOrInsert(['service_id' => $service->id, 'port' => $port],
-            ['node_id' => $service->node_id, 'domain' => $domain, 'tls' => false, 'updated_at' => now(), 'created_at' => now()]);
+            ['node_id' => $service->node_id, 'domain' => $domain, 'aliases' => $aliases === [] ? null : implode(',', $aliases), 'tls' => false, 'updated_at' => now(), 'created_at' => now()]);
 
         $ingress = Ingress::sourceForNode((string) $service->organization_id, (string) $service->node_id);
-        $apply(ServiceRecipes::vhost($c, $port, $domain, false, $ingress), 120);
+        $apply(ServiceRecipes::vhost($c, $port, $domain, false, $ingress, $aliases), 120);
         // On an Incus host the name must route through the ingress before Let's Encrypt checks it.
         $this->deployer->syncIngress((object) ['organization_id' => $service->organization_id, 'node_id' => $service->node_id]);
         $site = (object) ['name' => "service-{$service->name}", 'domain' => $domain];
         $apply($this->sites->clearStaleCertificateRecipe($domain), 60);
-        $apply($this->sites->certificateRecipe($site), 180);
+        $apply($this->sites->certificateRecipe($site, $aliases), 180);
         DB::table('service_endpoints')->where('service_id', $service->id)->where('port', $port)->update(['tls' => true, 'updated_at' => now()]);
-        $apply(ServiceRecipes::vhost($c, $port, $domain, true, $ingress), 120);
-        $log('proxy', "https://{$domain}/ serves 127.0.0.1:{$port}");
+        $apply(ServiceRecipes::vhost($c, $port, $domain, true, $ingress, $aliases), 120);
+        $log('proxy', implode(' and ', array_map(fn ($d) => "https://{$d}/", [$domain, ...$aliases]))." serve 127.0.0.1:{$port}");
     }
 
     /** @param Closure(array<string, mixed>, int): void $apply */

@@ -6,9 +6,14 @@ namespace Tests\Feature\Services;
 
 use App\Lib\Containers\Containers;
 use App\Lib\Containers\Docker;
+use App\Lib\Operations\OperationRunner;
+use App\Lib\Servers\Firewall;
 use App\Lib\Services\ContainerRecipes;
+use App\Lib\Services\ServiceRunner;
 use App\Lib\Services\Services;
 use App\Lib\Sites\Sites;
+use App\Lib\Templates\Definition;
+use App\Lib\Templates\Sources;
 use App\Lib\Vault\Vault;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Support\Facades\DB;
@@ -350,10 +355,10 @@ final class ContainersTest extends ServiceTestCase
         mkdir($dir);
         file_put_contents($dir.'/ro-box.yml', str_replace(['id: uptime-kuma', 'read_only: false'], ['id: ro-box', 'read_only: true'], (string) file_get_contents(base_path('templates/uptime-kuma.yml'))));
         config(['templates.path' => $dir, 'templates.sources' => [['kind' => 'builtin'], ['kind' => 'local']], 'templates.allow_custom' => true]);
-        $this->app->forgetInstance(\App\Lib\Templates\Sources::class);
+        $this->app->forgetInstance(Sources::class);
         $this->app->forgetInstance(Services::class);
-        $this->app->forgetInstance(\App\Lib\Services\ServiceRunner::class);
-        $this->app->forgetInstance(\App\Lib\Operations\OperationRunner::class);
+        $this->app->forgetInstance(ServiceRunner::class);
+        $this->app->forgetInstance(OperationRunner::class);
 
         $made = $this->install('ro-box', self::KUMA);
         @unlink($dir.'/ro-box.yml');
@@ -414,6 +419,39 @@ final class ContainersTest extends ServiceTestCase
         $this->assertSame([23000], DB::table('service_endpoints')->pluck('port')->map(fn ($p) => (int) $p)->all());
         $this->assertStringContainsString('docker rm -f', $this->steps('service-run')['remove-old']['args'][1], 'the old container is removed before the new one is run');
         $this->assertSame('running', $this->service('kuma')->status);
+    }
+
+    public function test_several_names_share_one_endpoint_one_vhost_and_one_certificate(): void
+    {
+        $this->prepared();
+        $run = $this->kuma(['name' => 'kuma', 'host' => 'Kuma.example.com, status.example.com kuma.example.com']);
+        $this->assertSame('succeeded', $run['status'], (string) DB::table('operations')->value('error'));
+
+        $row = DB::table('service_endpoints')->first();
+        $this->assertSame(['kuma.example.com', 'status.example.com'], [$row->domain, $row->aliases]);
+        $this->assertSame(1, DB::table('service_endpoints')->count());
+
+        $vhost = base64_decode($this->steps('service-vhost-kuma-23000')['vhost']['content_b64']);
+        $this->assertStringContainsString('server_name kuma.example.com status.example.com;', $vhost);
+        $args = $this->steps('certificate-service-kuma')['certbot']['args'];
+        $this->assertSame(['--cert-name', 'kuma.example.com', '-d', 'kuma.example.com', '-d', 'status.example.com'], array_slice($args, 4, 6));
+    }
+
+    public function test_a_name_another_service_already_answers_to_is_refused_and_one_name_only_inputs_refuse_a_list(): void
+    {
+        $this->prepared();
+        $this->kuma(['name' => 'kuma', 'host' => 'kuma.example.com,status.example.com']);
+
+        try {
+            $this->services()->install('org-1', 'web-1.org-1', 'uptime-kuma', ['name' => 'k2', 'host' => 'k2.example.com,status.example.com'], 'm', 'manager', dispatch: false);
+            $this->fail('status.example.com is already taken');
+        } catch (InvalidArgumentException $e) {
+            $this->assertStringContainsString('status.example.com is already the address of another service', $e->getMessage());
+        }
+
+        $one = Definition::parse(str_replace('multiple: true, ', '', (string) file_get_contents(base_path('templates/uptime-kuma.yml'))));
+        $this->expectException(InvalidArgumentException::class);
+        $one->render(['name' => 'kuma', 'host' => 'a.example.com,b.example.com']);
     }
 
     // ---- start, stop, restart, remove --------------------------------------------
@@ -477,7 +515,7 @@ final class ContainersTest extends ServiceTestCase
         $yaml = str_replace(['id: uptime-kuma', "  env: {}\n", "inputs:\n"], ['id: secret-box', "  env: { ADMIN_TOKEN: \"{{ secrets.token }}\" }\n", "secrets:\n  - { key: token, generate: password }\ninputs:\n"], $yaml);
         file_put_contents($dir.'/secret-box.yml', $yaml);
         config(['templates.path' => $dir, 'templates.sources' => [['kind' => 'builtin'], ['kind' => 'local']], 'templates.allow_custom' => true]);
-        foreach ([\App\Lib\Templates\Sources::class, Services::class, \App\Lib\Services\ServiceRunner::class, \App\Lib\Operations\OperationRunner::class] as $c) {
+        foreach ([Sources::class, Services::class, ServiceRunner::class, OperationRunner::class] as $c) {
             $this->app->forgetInstance($c);
         }
         $made = $this->install('secret-box', self::KUMA);
@@ -572,7 +610,7 @@ final class ContainersTest extends ServiceTestCase
     {
         $git = ['name' => 'git', 'host' => 'git.example.com'];
         $made = $this->services()->install('org-1', 'web-1.org-1', 'gitea', $git, 'm', 'manager', dispatch: false, portsApproved: true);
-        \App\Lib\Servers\Firewall::save('web-1.org-1', true, [], []);
+        Firewall::save('web-1.org-1', true, [], []);
         $this->assertSame('succeeded', $this->operate($made['operation_id']), (string) DB::table('operations')->value('error'));
 
         $fw = $this->steps('firewall');
@@ -581,7 +619,7 @@ final class ContainersTest extends ServiceTestCase
 
         // Off: nothing is applied.
         $this->recipes = [];
-        \App\Lib\Servers\Firewall::save('web-1.org-1', false, [], []);
+        Firewall::save('web-1.org-1', false, [], []);
         $op = $this->services()->remove('org-1', 'web-1.org-1', 'git', false, 'm', 'manager', dispatch: false);
         $this->operate($op);
         $this->assertNotContains('firewall', $this->recipeNames());

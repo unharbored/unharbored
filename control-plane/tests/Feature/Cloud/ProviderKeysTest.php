@@ -34,6 +34,8 @@ final class ProviderKeysTest extends TestCase
 
     private bool $doRefuses = false;
 
+    private int $doRefusalStatus = 401;
+
     private bool $spaceshipRefuses = false;
 
     protected function setUp(): void
@@ -49,7 +51,7 @@ final class ProviderKeysTest extends TestCase
         $http = new HttpFactory();
         $http->fake(function (Request $r) use ($http) {
             if (str_contains($r->url(), 'digitalocean.com')) {
-                return $this->doRefuses ? $http->response(['id' => 'unauthorized'], 401) : $http->response(['account' => ['email' => 'matt@example.com', 'uuid' => 'u-1']]);
+                return $this->doRefuses ? $http->response(['id' => 'unauthorized'], $this->doRefusalStatus) : $http->response(['account' => ['email' => 'matt@example.com', 'uuid' => 'u-1']]);
             }
 
             return $this->spaceshipRefuses ? $http->response([], 401) : $http->response(['items' => [['type' => 'A', 'name' => '@', 'address' => '1.2.3.4', 'ttl' => 300]]]);
@@ -96,6 +98,20 @@ final class ProviderKeysTest extends TestCase
         $this->assertSame(['failed', 'Expired 3 days ago'], ProviderKeys::badge(['state' => 'expired', 'days' => -3]));
     }
 
+    public function test_a_token_with_missing_scopes_is_told_apart_from_one_digitalocean_does_not_know(): void
+    {
+        $this->doRefuses = true;
+        $this->doRefusalStatus = 403;
+        try {
+            $this->keys()->connectCloud('org-1', 'dop_v1_narrow', null, $this->actor());
+            $this->fail('A token without the permissions is not kept.');
+        } catch (InvalidArgumentException $e) {
+            $this->assertStringContainsString('accepts that token, but it does not have enough permissions', $e->getMessage());
+            $this->assertStringContainsString('Full Access', $e->getMessage());
+        }
+        $this->assertSame([], $this->keys()->cloud('org-1'));
+    }
+
     public function test_a_refused_token_changes_nothing_and_the_old_one_stays(): void
     {
         $this->keys()->connectCloud('org-1', self::TOKEN, '2027-01-12', $this->actor());
@@ -105,6 +121,7 @@ final class ProviderKeysTest extends TestCase
             $this->keys()->connectCloud('org-1', 'dop_v1_bad', null, $this->actor());
             $this->fail('A refused token is not kept.');
         } catch (InvalidArgumentException $e) {
+            $this->assertStringContainsString('does not recognise that token', $e->getMessage());
             $this->assertStringContainsString('Nothing was changed', $e->getMessage());
         }
         $row = $this->keys()->cloud('org-1')[0];
@@ -168,7 +185,24 @@ final class ProviderKeysTest extends TestCase
 
         $this->keys()->disconnect('org-1', 'dns', $this->actor());
         $this->assertSame([], $this->keys()->dnsList('org-1'));
-        $this->assertNull($this->app->make(Spaceship::class)->domain('org-1'));
+        $this->assertSame([], $this->app->make(Spaceship::class)->domains('org-1'));
+    }
+
+    public function test_dns_domains_are_edited_with_the_saved_key_and_the_list_shows_them_all(): void
+    {
+        $this->keys()->connectDns('org-1', 'example.com', 'KEYKEYKEYKEYKEYK7Qm', 'SECRETSECRETSECRET', null, $this->actor());
+
+        $this->keys()->setDnsDomains('org-1', 'example.com, example.org');
+        $this->assertSame(['example.com', 'example.org'], $this->keys()->dnsList('org-1')[0]['domains']);
+
+        $this->spaceshipRefuses = true;
+        try {
+            $this->keys()->setDnsDomains('org-1', 'example.net');
+            $this->fail('refused');
+        } catch (InvalidArgumentException $e) {
+            $this->assertStringContainsString('Nothing was changed', $e->getMessage());
+        }
+        $this->assertSame(['example.com', 'example.org'], $this->keys()->dnsList('org-1')[0]['domains']);
     }
 
     public function test_the_daily_check_marks_a_rejected_key_and_alerts_say_so(): void

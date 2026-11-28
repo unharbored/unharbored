@@ -50,7 +50,7 @@ const statusOf = (s) => (s.status === 'running' ? 'live' : ['installing', 'remov
           </td>
           <td>
             <div class="flex flex-col gap-[3px]">
-              <span v-for="e in s.endpoints" :key="e.domain" class="text-[13px]">{{ e.tls ? 'https://' : 'http://' }}{{ e.domain }}</span>
+              <span v-for="e in s.endpoints" :key="e.domain" class="text-[13px]">{{ e.tls ? 'https://' : 'http://' }}{{ [e.domain, ...(e.aliases ?? [])].join(', ' + (e.tls ? 'https://' : 'http://')) }}</span>
             </div>
           </td>
           <td class="text-[13px] text-muted"><template v-if="s.memory_used !== null">memory {{ s.memory_used }}% used · {{ s.disk_free }} disk free</template><template v-else>no report yet</template></td>

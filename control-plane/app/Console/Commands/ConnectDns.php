@@ -16,9 +16,9 @@ use Throwable;
  */
 final class ConnectDns extends Command
 {
-    protected $signature = 'dns:connect {organization : Organisation id} {domain : The domain at Spaceship, e.g. example.com}';
+    protected $signature = 'dns:connect {organization : Organisation id} {domain : The domain at Spaceship, e.g. example.com; several separated by commas}';
 
-    protected $description = "Connect a Spaceship domain's DNS records (key with dnsrecords:read and dnsrecords:write)";
+    protected $description = "Connect Spaceship domains' DNS records (key with dnsrecords:read and dnsrecords:write)";
 
     public function handle(Spaceship $spaceship): int
     {

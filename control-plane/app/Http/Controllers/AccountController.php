@@ -474,7 +474,7 @@ final class AccountController
                 $data = $request->validate(['token' => 'required|string|max:300'] + $expires);
                 $this->providers->connectCloud(Org::id(), $data['token'], $data['expires_at'] ?? null, $actor);
             } else {
-                $data = $request->validate(['domain' => 'required|string|max:253', 'key' => 'required|string|max:300', 'secret' => 'required|string|max:300'] + $expires);
+                $data = $request->validate(['domain' => 'required|string|max:2000', 'key' => 'required|string|max:300', 'secret' => 'required|string|max:300'] + $expires);
                 $this->providers->connectDns(Org::id(), $data['domain'], $data['key'], $data['secret'], $data['expires_at'] ?? null, $actor);
             }
         } catch (InvalidArgumentException $e) {
@@ -491,6 +491,20 @@ final class AccountController
         $this->providers->setExpiry(Org::id(), $kind, $data['expires_at'] ?? null, $this->actor($request));
 
         return $this->tab('providers', '#provider-keys')->with('status', ($data['expires_at'] ?? null) ? 'Expiry saved.' : 'No expiry set.');
+    }
+
+    /** Changes which domains the saved DNS key serves, without asking for the key again. */
+    public function dnsDomains(Request $request): RedirectResponse
+    {
+        Gate::authorize('connections');
+        $data = $request->validate(['domains' => 'required|string|max:2000']);
+        try {
+            $this->providers->setDnsDomains(Org::id(), $data['domains']);
+        } catch (InvalidArgumentException $e) {
+            return back()->withErrors(['provider_dns' => $e->getMessage()])->withFragment('provider-keys');
+        }
+
+        return $this->tab('providers', '#provider-keys')->with('status', 'The domains were checked and saved.');
     }
 
     public function testProvider(Request $request, string $kind): RedirectResponse

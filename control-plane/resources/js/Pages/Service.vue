@@ -160,7 +160,7 @@ async function confirmRemove() {
 
     <Panel title="Addresses">
         <div v-for="e in v.endpoints" :key="e.port" class="flex justify-between gap-3">
-          <a :href="`https://${e.domain}`" rel="noopener" target="_blank">https://{{ e.domain }}</a>
+          <span class="flex min-w-0 flex-col"><a v-for="d in [e.domain, ...(e.aliases ?? [])]" :key="d" :href="`https://${d}`" rel="noopener" target="_blank">https://{{ d }}</a></span>
           <span class="text-[13px] text-faint">certificate: {{ e.tls ? 'issued' : 'not issued yet' }} · <template v-if="v.runtime === 'container'">container port {{ e.container_port ?? '' }} published on {{ e.listen }} only </template><template v-else>port {{ e.port }} on the server </template></span>
         </div>
         <span v-if="v.endpoints.length === 0" class="text-[13px] text-faint">No addresses yet.</span>
