@@ -101,7 +101,7 @@ final class HandleInertiaRequests extends Middleware
         return [
             'id' => $current->id,
             'app' => ['id' => $app->id, 'name' => $app->name],
-            'apps' => DB::table('sites')->where('organization_id', $org)->whereNull('parent_site_id')->orderBy('name')->get(['id', 'name'])->all(),
+            'apps' => DB::table('sites')->where('organization_id', $org)->whereNull('archived_at')->whereNull('parent_site_id')->orderBy('name')->get(['id', 'name'])->all(),
             'env' => ['id' => $current->id, 'label' => $envName($current)],
             'envs' => $envs->map(fn ($e) => ['id' => $e->id, 'label' => $envName($e), 'preview' => (bool) $e->parent_site_id])->all(),
             'newApp' => route('apps.new'),

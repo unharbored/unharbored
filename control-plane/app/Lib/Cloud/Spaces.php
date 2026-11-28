@@ -100,6 +100,161 @@ final class Spaces
     }
 
     /**
+     * Deletes the bucket this platform made for the site, everything in it, and its key, and points the
+     * site back at its own disk. A bucket the user brought is never touched: it is only let go of.
+     * Deleting a bucket needs the same full-access key making one does, made now and deleted straight after.
+     *
+     * @return list<string> What was done, for the operation log.
+     */
+    public function remove(stdClass $site): array
+    {
+        $resource = $site->bucket_id === null ? null : $this->resources->findById((int) $site->bucket_id);
+        if ($resource === null) {
+            throw new InvalidArgumentException("{$site->name} has no bucket.");
+        }
+        $actor = Actor::system('control-plane');
+        $bucket = (string) ($resource->attributes['bucket'] ?? $resource->external_id);
+        $done = [];
+
+        if (($resource->attributes['adopted'] ?? false) !== true) {
+            $region = (string) ($resource->attributes['region'] ?? $this->region($site));
+            $endpoint = self::endpoint($region);
+            $client = $this->credentials->clientFor($site->organization_id, "Deleting the storage of {$site->name}", $actor);
+            $temporary = $client->post('spaces/keys', ['name' => "cm-{$site->name}-remove", 'grants' => [['bucket' => '', 'permission' => 'fullaccess']]])['key'] ?? [];
+            try {
+                $erased = $this->emptyAndDelete($endpoint, $bucket, (string) $temporary['access_key'], (string) $temporary['secret_key']);
+                $done[] = "bucket {$bucket} deleted".($erased > 0 ? ", with {$erased} file".($erased === 1 ? '' : 's') : '');
+            } finally {
+                try {
+                    $client->delete('spaces/keys/'.$temporary['access_key']);
+                } catch (Throwable) {
+                    $done[] = "could not delete the temporary key {$temporary['access_key']}: delete it under API → Spaces Keys";
+                }
+            }
+            if (isset($resource->attributes['key_id'])) {
+                try {
+                    $client->delete('spaces/keys/'.$resource->attributes['key_id']);
+                    $done[] = "the key for {$bucket} deleted";
+                } catch (Throwable) {
+                    $done[] = "could not delete the key {$resource->attributes['key_id']} for {$bucket}: delete it under API → Spaces Keys";
+                }
+            }
+        } else {
+            $done[] = "{$bucket} is yours already: it and its key are left as they are";
+        }
+
+        $resource = $this->resources->transition($resource, ResourceState::Deleting, reason: 'Bucket removed', actor: $actor);
+        $this->resources->transition($resource, ResourceState::Deleted, reason: 'Bucket removed', actor: $actor);
+        DB::table('sites')->where('id', $site->id)->update(['bucket_id' => null, 'updated_at' => now()]);
+        $this->sites->setInjected($site, array_fill_keys(['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_DEFAULT_REGION', 'AWS_BUCKET', 'AWS_ENDPOINT', 'AWS_URL', 'AWS_USE_PATH_STYLE_ENDPOINT'], null)
+            + ['FILESYSTEM_DISK' => 'local'], 'Storage removed');
+        $done[] = '.env uses the server disk again; deploy to switch';
+        $this->audit->record($site->organization_id, $actor, 'site.bucket_removed', resourceType: 'site',
+            resourceId: "{$site->node_id}/{$site->name}", metadata: ['bucket' => $bucket]);
+
+        return $done;
+    }
+
+    /** Deletes every object, then the bucket. Returns how many objects there were. */
+    private function emptyAndDelete(string $endpoint, string $bucket, string $accessKey, #[SensitiveParameter] string $secretKey): int
+    {
+        $count = 0;
+        $token = null;
+        for ($page = 0; $page < 1000; $page++) {
+            $params = ['list-type' => '2'] + ($token === null ? [] : ['continuation-token' => $token]);
+            $list = $this->http->get(self::presign('GET', $endpoint, $bucket, '', $accessKey, $secretKey, 300, params: $params));
+            if (! $list->successful()) {
+                throw new RuntimeException("Could not list {$bucket}: HTTP {$list->status()}");
+            }
+            preg_match_all('#<Key>([^<]+)</Key>#', $list->body(), $m);
+            foreach ($m[1] as $key) {
+                $this->http->delete(self::presign('DELETE', $endpoint, $bucket, html_entity_decode($key), $accessKey, $secretKey, 300))->throw();
+                $count++;
+            }
+            if (! preg_match('#<NextContinuationToken>([^<]+)</NextContinuationToken>#', $list->body(), $next)) {
+                break;
+            }
+            $token = html_entity_decode($next[1]);
+        }
+        $response = $this->http->withHeaders(self::sign('DELETE', $endpoint, "/{$bucket}", $accessKey, $secretKey))->delete("{$endpoint}/{$bucket}");
+        if (! $response->successful() && $response->status() !== 404) {
+            preg_match('#<Code>([^<]+)</Code>#', $response->body(), $c);
+            throw new RuntimeException("Spaces would not delete {$bucket}: ".($c[1] ?? "HTTP {$response->status()}"));
+        }
+
+        return $count;
+    }
+
+    /**
+     * Points the site at a bucket that already exists and that this platform did not make, at any S3-compatible
+     * service. The key is tried with one read-only request (HEAD on the bucket); nothing is created, written or
+     * deleted there, and the bucket and key are never touched afterwards, by deleting the site or otherwise.
+     *
+     * @return list<string> What was done, for the operation log.
+     */
+    public function useExisting(stdClass $site, string $endpoint, string $bucket, string $accessKey, #[SensitiveParameter] string $secretKey, string $region = self::SIGNING_REGION, ?string $url = null): array
+    {
+        $endpoint = rtrim(trim($endpoint), '/');
+        $host = strtolower((string) parse_url($endpoint, PHP_URL_HOST));
+        if (parse_url($endpoint, PHP_URL_SCHEME) !== 'https' || $host === '' || parse_url($endpoint, PHP_URL_PATH) !== null && parse_url($endpoint, PHP_URL_PATH) !== ''
+            || $host === 'localhost' || preg_match('/\.(local|internal|localhost)$/', $host)
+            || (filter_var($host, FILTER_VALIDATE_IP) !== false && filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) === false)) {
+            throw new InvalidArgumentException('The endpoint is the https address of the storage service, for example https://nyc3.digitaloceanspaces.com.');
+        }
+        if (! preg_match('/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/', $bucket)) {
+            throw new InvalidArgumentException('That is not a bucket name: lowercase letters, digits, dots and dashes.');
+        }
+        if (! preg_match('/^[a-z0-9-]{1,30}$/', $region)) {
+            throw new InvalidArgumentException('The region is a short name such as us-east-1 or nyc3.');
+        }
+        if ($url !== null && $url !== '' && (parse_url($url, PHP_URL_SCHEME) !== 'https' || parse_url($url, PHP_URL_HOST) === null)) {
+            throw new InvalidArgumentException('The public address, if you give one, is an https address.');
+        }
+        if ($accessKey === '' || $secretKey === '') {
+            throw new InvalidArgumentException('Both the access key and its secret are needed.');
+        }
+        if ($site->bucket_id !== null) {
+            throw new InvalidArgumentException("{$site->name} already has a bucket.");
+        }
+
+        $response = $this->http->withHeaders(self::sign('HEAD', $endpoint, "/{$bucket}", $accessKey, $secretKey, region: $region))->head("{$endpoint}/{$bucket}");
+        if (! $response->successful()) {
+            throw new InvalidArgumentException(match ($response->status()) {
+                404 => "There is no bucket called {$bucket} at {$host}.",
+                401, 403 => "{$host} refused that key for {$bucket}. Check the key, its secret and that it may read this bucket.",
+                301, 400 => "{$host} did not accept the region {$region} for {$bucket}. Use the region the bucket is in.",
+                default => "{$host} answered HTTP {$response->status()} when asked about {$bucket}.",
+            });
+        }
+
+        $actor = Actor::system('control-plane');
+        $resource = $this->resources->declare($site->organization_id, 'bucket', $site->name, ['bucket' => $bucket, 'endpoint' => $endpoint, 'region' => $region, 'adopted' => true]);
+        if ($resource->state === ResourceState::Active) {
+            throw new InvalidArgumentException("{$site->name} already has a bucket, {$resource->attributes['bucket']}.");
+        }
+        if ($resource->state !== ResourceState::Provisioning) {
+            $resource = $this->resources->transition($resource, ResourceState::Provisioning, reason: "Using the existing bucket {$bucket}", actor: $actor);
+        }
+        $resource = $this->resources->recordExternalId($resource, $bucket);
+        $this->sites->setInjected($site, [
+            'FILESYSTEM_DISK' => 's3',
+            'AWS_ACCESS_KEY_ID' => $accessKey,
+            'AWS_SECRET_ACCESS_KEY' => $secretKey,
+            'AWS_DEFAULT_REGION' => $region,
+            'AWS_BUCKET' => $bucket,
+            'AWS_ENDPOINT' => $endpoint,
+            'AWS_URL' => $url !== null && $url !== '' ? $url : null,
+            'AWS_USE_PATH_STYLE_ENDPOINT' => 'true',
+        ], "Existing bucket {$bucket}");
+        $this->resources->transition($resource, ResourceState::Active, reason: 'Existing bucket checked and brought in; nothing was changed there', actor: $actor);
+        DB::table('sites')->where('id', $site->id)->update(['bucket_id' => $resource->id, 'updated_at' => now()]);
+        $this->audit->record($site->organization_id, $actor, 'site.bucket_attached', resourceType: 'site',
+            resourceId: "{$site->node_id}/{$site->name}", metadata: ['bucket' => $bucket, 'endpoint' => $endpoint, 'existing' => true]);
+
+        return ["{$bucket} at {$host} answered to the key", '.env uses it as the default disk; deploy to switch', 'nothing was created, written or deleted there'];
+    }
+
+    /**
      * A private bucket for the control plane's own nightly snapshots, with a
      * key for that bucket only, kept in the vault. Run once; the snapshot
      * command finds it by its resource row.
@@ -288,7 +443,7 @@ final class Spaces
      *
      * @return array<string, string>
      */
-    public static function sign(string $method, string $endpoint, string $path, string $accessKey, #[SensitiveParameter] string $secretKey, ?int $now = null): array
+    public static function sign(string $method, string $endpoint, string $path, string $accessKey, #[SensitiveParameter] string $secretKey, ?int $now = null, string $region = self::SIGNING_REGION): array
     {
         $now ??= time();
         $host = self::signedHost($endpoint);
@@ -297,11 +452,11 @@ final class Spaces
         $payload = hash('sha256', '');
         $signed = 'host;x-amz-content-sha256;x-amz-date';
         $canonical = "{$method}\n{$path}\n\nhost:{$host}\nx-amz-content-sha256:{$payload}\nx-amz-date:{$amzDate}\n\n{$signed}\n{$payload}";
-        $scope = "{$date}/".self::SIGNING_REGION.'/s3/aws4_request';
+        $scope = "{$date}/".$region.'/s3/aws4_request';
         $toSign = "AWS4-HMAC-SHA256\n{$amzDate}\n{$scope}\n".hash('sha256', $canonical);
 
         $k = hash_hmac('sha256', $date, 'AWS4'.$secretKey, true);
-        foreach ([self::SIGNING_REGION, 's3', 'aws4_request'] as $part) {
+        foreach ([$region, 's3', 'aws4_request'] as $part) {
             $k = hash_hmac('sha256', $part, $k, true);
         }
 

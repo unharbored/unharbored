@@ -36,6 +36,9 @@ final class GitWebhookController
         if ($push === null) {
             return response()->json(['ignored' => 'not a push to a branch, or its signature was wrong']);
         }
+        if ($row->archived_at !== null) {
+            return response()->json(['ignored' => 'this application is archived']);
+        }
         if (! $row->push_to_deploy || $push['branch'] !== $row->branch) {
             return response()->json(['ignored' => 'not the branch this application deploys']);
         }

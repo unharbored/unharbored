@@ -7,6 +7,7 @@ namespace App\Http\Controllers\SiteSettings;
 use App\Lib\Auth\Org;
 use App\Lib\Auth\Projects;
 use App\Lib\Operations\OperationRunner;
+use App\Lib\Sites\Archiving;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -35,6 +36,27 @@ final class SiteLifecycleController extends SiteSettingsBase
         }
 
         return $this->saved('Moved. Its previews moved with it.');
+    }
+
+    /** Stops managing the application; nothing on its server changes. */
+    public function archive(int $site): RedirectResponse
+    {
+        Gate::authorize('create');
+        app(Archiving::class)->archive(Org::id(), $site, $this->actor());
+
+        return $this->saved('Archived. It keeps running on its server; Unharbored no longer manages it.');
+    }
+
+    public function restore(int $site): RedirectResponse
+    {
+        Gate::authorize('create');
+        try {
+            app(Archiving::class)->restore(Org::id(), $site, $this->actor());
+        } catch (\InvalidArgumentException $e) {
+            throw ValidationException::withMessages(['archived' => $e->getMessage()]);
+        }
+
+        return $this->saved('Restored. Unharbored manages it again.');
     }
 
     public function delete(Request $request, int $site): Response

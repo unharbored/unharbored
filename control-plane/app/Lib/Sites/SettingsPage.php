@@ -49,6 +49,7 @@ final class SettingsPage
             'projects' => $row->parent_site_id ? [] : Projects::listing($org),
             'parent' => $row->parent_site_id ? (array) DB::table('sites')->where('organization_id', $org)->where('id', $row->parent_site_id)->first(['id', 'name']) : null,
             'previewIdle' => $row->preview_idle_days,
+            'archived' => $row->archived_at !== null,
         ];
     }
 
@@ -154,6 +155,7 @@ final class SettingsPage
                 ? 'Valkey on cluster '.(DB::table('resources')->where('organization_id', $org)->where('id', $row->cache_cluster_id)->value('slug') ?? '?')
                 : 'the database, as Laravel defaults',
             'bucket' => $row->bucket_id ? DB::table('resources')->where('organization_id', $org)->where('id', $row->bucket_id)->value('external_id') : null,
+            'bucketExisting' => $row->bucket_id ? (json_decode((string) DB::table('resources')->where('organization_id', $org)->where('id', $row->bucket_id)->value('attributes'), true)['adopted'] ?? false) === true : false,
             // One server and not a container: the engines a database can be put on, on that server.
             'localDatabases' => ($row->compute ?? 'single') === 'single' && ! Runtimes::isContainer($row)
                 ? collect(LocalServices::SERVICES)->where('kind', 'database')->map(fn ($v, $k) => ['service' => $k, 'label' => $v['label']])->values()->all() : [],
@@ -165,7 +167,7 @@ final class SettingsPage
             'cloneSql' => (string) ($row->clone_conversion ?? ''),
             'cloneExamples' => self::cloneExamples($row),
             'clusters' => DB::table('resources')->where('organization_id', $row->organization_id)->where('type', 'database_cluster')
-                ->where('state', 'active')->orderBy('slug')->get(['id', 'slug', 'attributes'])
+                ->where('state', 'active')->whereNull('archived_at')->orderBy('slug')->get(['id', 'slug', 'attributes'])
                 ->map(fn ($c) => ['id' => $c->id, 'label' => $c->slug.' · '.(DatabaseClusters::ENGINES[json_decode((string) $c->attributes, true)['engine'] ?? ''] ?? '?')])->all(),
         ];
     }
@@ -240,6 +242,13 @@ final class SettingsPage
         return null;
     }
 
+    /** A server this platform made at the provider, so destroying it is ours to offer; one the user brought is only ever disconnected. */
+    public static function destroyable(string $organizationId, string $nodeId): bool
+    {
+        return DB::table('resources')->where('organization_id', $organizationId)->where('type', 'server')
+            ->where('slug', strstr($nodeId, '.', true) ?: $nodeId)->whereNotNull('external_id')->exists();
+    }
+
     /** @return array<string, mixed> */
     private static function servers(object $row): array
     {
@@ -248,8 +257,9 @@ final class SettingsPage
         return [
             'servers' => array_map(fn ($n) => ['id' => $n, 'name' => strstr($n, '.', true) ?: $n, 'primary' => $n === $row->node_id,
                 'role' => in_array($n, Sites::workerNodes($row), true) ? Sites::ROLE_WORKER : Sites::ROLE_WEB,
-                'pooled' => DB::table('site_nodes')->where('site_id', $row->id)->where('node_id', $n)->whereNotNull('autoscale_pool_id')->exists()], Sites::nodes($row)),
-            'spare' => DB::table('nodes')->where('organization_id', $row->organization_id)->whereNotIn('node_id', Sites::nodes($row))
+                'pooled' => DB::table('site_nodes')->where('site_id', $row->id)->where('node_id', $n)->whereNotNull('autoscale_pool_id')->exists(),
+                'destroyable' => $n !== $row->node_id && self::destroyable($row->organization_id, $n)], Sites::nodes($row)),
+            'spare' => DB::table('nodes')->where('organization_id', $row->organization_id)->whereNull('archived_at')->whereNotIn('node_id', Sites::nodes($row))
                 ->whereNotIn('node_id', DB::table('site_nodes')->whereNotNull('autoscale_pool_id')->select('node_id'))
                 ->orderBy('node_id')->pluck('node_id')->map(fn ($n) => ['id' => $n, 'name' => strstr($n, '.', true) ?: $n])->all(),
             'pool' => $row->autoscale_pool_id ? json_decode((string) DB::table('resources')->where('organization_id', $org)->where('id', $row->autoscale_pool_id)->value('attributes'), true) : null,
@@ -292,7 +302,7 @@ final class SettingsPage
             // What the application is, and the runtime's settings as they stand, for the form.
             'rt' => ['runtime' => Runtimes::runtime($row), 'root' => Sites::rootDir($row)] + array_map(fn ($v) => $v === null ? '' : $v, $own)
                 + ['version' => '', 'install' => '', 'build' => '', 'release' => '', 'start' => '', 'output' => '', 'health' => '', 'port' => '', 'spa' => false],
-            'buildScript' => ['script' => trim((string) ($row->build_script ?? '')) !== '' ? (string) $row->build_script : Sites::DEFAULT_BUILD_SCRIPT, 'node' => (string) ($row->node_version ?? ''), 'custom' => trim((string) ($row->build_script ?? '')) !== ''],
+            'buildScript' => ['script' => trim((string) ($row->build_script ?? '')) !== '' ? (string) $row->build_script : Sites::DEFAULT_BUILD_SCRIPT, 'default' => Sites::DEFAULT_BUILD_SCRIPT, 'node' => (string) ($row->node_version ?? ''), 'custom' => trim((string) ($row->build_script ?? '')) !== ''],
             // What is set (types and hosts, never the secrets), so the box can say so.
             'composerAuth' => app(Sites::class)->composerAuthSummary($row),
             // Handed down from the team and the project, shown so nobody pastes them again.
@@ -372,13 +382,16 @@ final class SettingsPage
     {
         return [
             'phpVersion' => Sites::phpVersion($row),
-            'phpVersions' => ServerStack::PHP_VERSIONS,
-            'phpDefault' => ServerStack::PHP_VERSION,
+            'phpVersions' => array_values(array_intersect(ServerStack::PHP_VERSIONS, ...array_map(ServerStack::phpVersionsFor(...), Sites::nodes($row)))),
+            'phpDefault' => ServerStack::defaultPhpFor($row->node_id),
+            // Full patch versions as last read from the servers (nodes.php_patches), e.g. ['8.4' => '8.4.13']; empty until a server has been read.
+            'phpPatches' => DB::table('nodes')->whereIn('node_id', Sites::nodes($row))->pluck('php_patches')
+                ->reduce(fn (array $all, $json) => ($found = json_decode((string) $json, true)) ? $found + $all : $all, []),
             'phpInstalled' => array_map(function (string $node): array {
                 $versions = DB::table('server_php_versions')->where('node_id', $node)->pluck('version')->all();
 
                 return ['node' => strstr($node, '.', true) ?: $node,
-                    'versions' => array_values(array_unique([ServerStack::PHP_VERSION, ...$versions]))];
+                    'versions' => array_values(array_unique([ServerStack::defaultPhpFor($node), ...$versions]))];
             }, Sites::nodes($row)),
         ];
     }

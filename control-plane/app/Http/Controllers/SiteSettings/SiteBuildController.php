@@ -79,6 +79,28 @@ final class SiteBuildController extends SiteSettingsBase
         return $this->saved(trim((string) $request->input('auth', '')) === '' ? 'Composer credentials removed. The next deploy removes them from the servers.' : 'Composer credentials saved. The next deploy puts them on the servers.');
     }
 
+    /** Adds or replaces the application's credentials for one host; the others stay. */
+    public function composerHost(Request $request, int $site): RedirectResponse
+    {
+        Gate::authorize('edit');
+        try {
+            app(Sites::class)->setComposerHost($this->row($site), (string) $request->input('type', ''), (string) $request->input('host', ''), (string) $request->input('username', ''), (string) $request->input('secret', ''));
+        } catch (\InvalidArgumentException $e) {
+            throw ValidationException::withMessages(['composerAuth' => $e->getMessage()]);
+        }
+
+        return $this->saved('Composer credentials saved. The next deploy puts them on the servers.');
+    }
+
+    /** Removes the application's credentials for one host; the others stay. */
+    public function composerHostRemove(Request $request, int $site): RedirectResponse
+    {
+        Gate::authorize('edit');
+        app(Sites::class)->removeComposerHost($this->row($site), (string) $request->input('type', ''), (string) $request->input('host', ''));
+
+        return $this->saved('Composer credentials removed. The next deploy removes them from the servers.');
+    }
+
     /** Saves the PHP branch the site runs, to take effect on the next deploy. */
     public function php(Request $request, int $site): RedirectResponse
     {
@@ -90,7 +112,7 @@ final class SiteBuildController extends SiteSettingsBase
         }
         $missing = [];
         foreach (Sites::nodes($row) as $node) {
-            $installed = $version === ServerStack::PHP_VERSION
+            $installed = $version === ServerStack::defaultPhpFor($node)
                 || DB::table('server_php_versions')->where('node_id', $node)->where('version', $version)->exists();
             if (! $installed) {
                 $missing[] = strstr($node, '.', true) ?: $node;

@@ -432,7 +432,7 @@ final class V1Controller extends Controller
         return response()->json(['servers' => DB::table('nodes')->where('organization_id', $org)->orderBy('node_id')->get()->map(function ($n) use ($connected) {
             $m = DB::table('node_metrics')->where('node_id', $n->node_id)->orderByDesc('collected_at')->first();
 
-            return ['node' => $n->node_id, 'connected' => $connected->has($n->node_id), 'agent' => $n->agent_version, 'provider' => $n->provider,
+            return ['node' => $n->node_id, 'archived' => $n->archived_at !== null, 'connected' => $connected->has($n->node_id), 'agent' => $n->agent_version, 'provider' => $n->provider,
                 'cpu' => $m ? round((float) $m->cpu, 1) : null,
                 'memory_used' => $m && $m->mem_total > 0 ? round(100 * ($m->mem_total - $m->mem_available) / $m->mem_total, 1) : null,
                 'disk_used' => $m && $m->disk_total > 0 ? round(100 * ($m->disk_total - $m->disk_free) / $m->disk_total, 1) : null];

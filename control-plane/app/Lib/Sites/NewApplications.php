@@ -331,7 +331,7 @@ final class NewApplications
      */
     public static function servers(string $organizationId, ?string $provider = null): array
     {
-        return DB::table('nodes')->where('organization_id', $organizationId)
+        return DB::table('nodes')->where('organization_id', $organizationId)->whereNull('archived_at')
             ->when($provider !== null, fn ($q) => $q->where('provider', $provider))
             ->where(fn ($q) => $q->whereNull('role')->orWhereNotIn('role', ['preview', 'ingress', \App\Lib\Providers\Incus\IncusHost::ROLE]))
             ->whereNotIn('node_id', DB::table('site_nodes')->whereNotNull('autoscale_pool_id')->select('node_id'))
@@ -341,7 +341,7 @@ final class NewApplications
     /** @return list<array{id: int, slug: string, engine: string}> Clusters that are up. */
     public static function clusters(string $organizationId, ?string $provider = null): array
     {
-        return DB::table('resources')->where('organization_id', $organizationId)->where('type', 'database_cluster')->where('state', 'active')
+        return DB::table('resources')->where('organization_id', $organizationId)->where('type', 'database_cluster')->where('state', 'active')->whereNull('archived_at')
             ->when($provider !== null, fn ($q) => $q->where('provider', $provider))
             ->orderBy('slug')->get(['id', 'slug', 'attributes'])
             ->map(fn ($r) => ['id' => (int) $r->id, 'slug' => $r->slug, 'engine' => (string) (json_decode((string) $r->attributes, true)['engine'] ?? '')])

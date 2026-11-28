@@ -321,6 +321,17 @@ final class ServiceBackupTest extends ServiceTestCase
         $this->assertSame(1, DB::table('service_backups')->where('service_id', $c)->count());
     }
 
+    public function test_the_nightly_job_leaves_out_services_on_an_archived_server(): void
+    {
+        $this->rustfsOn('snap');
+        $this->rustfsOn('kept');
+        DB::table('nodes')->where('node_id', $this->nodeOf('snap'))->update(['archived_at' => now()]);
+
+        $this->assertSame(['kept'], array_map(fn ($s) => $s->name, app(ServiceBackups::class)->nightly()));
+        $this->artisan('services:backup')->assertSuccessful();
+        $this->assertSame(1, DB::table('operations')->where('kind', 'template_service_backup')->count());
+    }
+
     public function test_the_nightly_job_is_in_the_cron_file_the_deploy_installs(): void
     {
         $cron = (string) file_get_contents(base_path('../scripts/mgmt/files/cron'));

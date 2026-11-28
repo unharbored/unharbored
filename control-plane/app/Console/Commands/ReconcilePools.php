@@ -29,7 +29,7 @@ final class ReconcilePools extends Command
     public function handle(AutoscalePools $pools, OperationRunner $runner): int
     {
         $failed = false;
-        foreach (DB::table('sites')->whereNotNull('autoscale_pool_id')->get() as $site) {
+        foreach (DB::table('sites')->whereNull('archived_at')->whereNotNull('autoscale_pool_id')->get() as $site) {
             // Ours, not a provider's pool: the scaler watches its own servers.
             if (\App\Lib\Scaling\ServerScaler::manages($site)) {
                 continue;

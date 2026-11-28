@@ -23,7 +23,7 @@ final class ScaleWorkers extends Command
     public function handle(WorkerScaling $scaling): int
     {
         $failed = false;
-        foreach (DB::table('sites')->whereNotNull('queue_workers_max')->whereNotNull('current_release')->get() as $site) {
+        foreach (DB::table('sites')->whereNull('archived_at')->whereNotNull('queue_workers_max')->whereNotNull('current_release')->get() as $site) {
             try {
                 if (($changed = $scaling->tick($site)) !== null) {
                     $this->line("{$site->name}: {$changed}");

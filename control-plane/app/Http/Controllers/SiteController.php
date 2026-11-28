@@ -321,12 +321,26 @@ final class SiteController extends Controller
         $data = [
             ['title' => 'Database', 'note' => $db?->slug, 'rows' => $db
                 ? [['Engine', $engine($db), null], ['Database', str_replace('-', '_', $row->name), null], ['State', $db->state, $db->state === 'active' ? 'ok' : 'warn']]
-                : [['Engine', 'SQLite', null], ['Where', 'on the server', null]]],
+                : [['Engine', $this->envEngine($row), null], ['Where', 'on the server', null]]],
             ['title' => 'Cache, sessions, queue', 'note' => $cache?->slug, 'rows' => [['Engine', $cache ? $engine($cache) : 'the database', null]]],
             ['title' => 'Uploads', 'note' => $bucket?->slug, 'rows' => [['Kept on', $bucket ? 'a Spaces bucket' : 'the server disk', null]]],
         ];
 
         return ['Network' => $network, 'Compute' => $compute, 'Data' => $data];
+    }
+
+    /** The engine a site without a database cluster uses: what DB_CONNECTION says in the env it runs with (injected and its own variables). */
+    private function envEngine(object $row): string
+    {
+        $env = app(Sites::class)->env($row);
+        $connection = preg_match('/^DB_CONNECTION=["\']?([^"\'\s]*)/m', $env, $m) ? strtolower($m[1]) : 'sqlite';
+
+        return match ($connection) {
+            'mysql', 'mariadb' => 'MySQL',
+            'pgsql', 'postgres', 'postgresql' => 'PostgreSQL',
+            'sqlite', '' => 'SQLite',
+            default => $connection,
+        };
     }
 
     private function repo(?string $repository): string

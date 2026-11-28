@@ -23,7 +23,7 @@ final class SiteSettingsPermissionsTest extends TestCase
 
     /** What a Developer may not change: infrastructure, and creating or deleting applications. */
     private const MANAGER_ONLY = [
-        'site.settings.database.attach', 'site.settings.database.detach', 'site.settings.storage', 'site.settings.clones.sql', 'site.settings.clones.create', 'site.settings.clones.drop',
+        'site.settings.database.attach', 'site.settings.database.detach', 'site.settings.storage', 'site.settings.storage.existing', 'site.settings.clones.sql', 'site.settings.clones.create', 'site.settings.clones.drop',
         'site.settings.servers.add', 'site.settings.servers.new', 'site.settings.servers.remove', 'site.settings.balancer', 'site.settings.pool', 'site.settings.pool.remove',
         'site.settings.project', 'site.settings.delete',
     ];

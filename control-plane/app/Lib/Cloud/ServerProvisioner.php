@@ -114,12 +114,10 @@ final class ServerProvisioner
 
         try {
             $token = $this->enrollment->issueToken($organizationId, $nodeId, actor: $actor);
-            $ca = $this->enrollment->certificateAuthorityFor($organizationId);
-
             $userData = $this->cloudInit->build(
                 nodeId: $nodeId,
                 enrollmentToken: $token,
-                caCertificatePem: $ca->certificatePem(),
+                caCertificatePem: $this->enrollment->serverTrustFor($organizationId),
                 hostname: $slug,
             );
         } catch (Throwable $e) {

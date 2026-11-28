@@ -120,3 +120,4 @@ scripts/live/local.env
 
 # An install's own code, loaded by CustomServiceProvider (see docs/self-hosting.md, "Customising")
 /control-plane/custom/
+screenshots/

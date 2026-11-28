@@ -147,7 +147,7 @@ final class Deployer
                 $taken = app(SiteBackups::class)->take($site, 'deploy');
                 $this->say('backup', 'database copied to '.basename($taken['object']).' before migrations');
             }
-            $php = Sites::phpVersion($site);
+            $php = Runtimes::has($site, 'composer') ? $this->fitPhp($site, Sites::appDir($site, $path), Sites::phpVersion($site)) : Sites::phpVersion($site);
             foreach ($builders as $node) {
                 $this->recipe($this->at($site, $node), ! Runtimes::has($site, 'composer') ? Runtimes::buildRecipe($site, Sites::appDir($site, $path), $node === $site->node_id) : $this->buildRecipe(Sites::appDir($site, $path), migrate: $node === $site->node_id && $this->migrates($site), seeder: $node === $site->node_id ? $this->seeder($site) : null, php: $php, composerHome: $this->sites->hasComposerAuth($site) ? Sites::composerHome($site) : null, scriptOf: $site), self::BUILD_TIMEOUT);
             }
@@ -1086,7 +1086,8 @@ CONF;
         $user = ServerStack::DEPLOY_USER;
         $binary = ServerStack::phpBinary($php ?? ServerStack::PHP_VERSION);
         $as = static fn (string ...$args): array => ['-u', $user, '--', ...$args];
-        $composerEnv = $composerHome === null ? [] : ['env', "COMPOSER_HOME={$composerHome}"];
+        // A newer PHP than a package declares is allowed: the person chose it. Only an older one fails, and fitPhp has already moved that.
+        $composerEnv = ['env', 'COMPOSER_IGNORE_PLATFORM_REQS=php+', ...($composerHome === null ? [] : ["COMPOSER_HOME={$composerHome}"])];
 
         $steps = [
             [
@@ -1767,6 +1768,45 @@ CONF;
         if (DB::table('nodes')->where('node_id', $site->node_id)->value('containers_ready_at') === null) {
             throw new RuntimeException("{$site->node_id} is not prepared for containers. Prepare it from its Containers page, then deploy again.");
         }
+    }
+
+    /**
+     * The PHP branch to build on. Composer refuses a lock whose packages do not all fit the running PHP, so the lock is read first:
+     * where the site's branch fits, nothing changes; where another installed branch fits, the site moves to it; where one fits that is
+     * not installed, the deploy stops here and says so, instead of with Composer's own message after it has begun.
+     */
+    private function fitPhp(stdClass $site, string $appDir, string $php): string
+    {
+        $read = 'chdir($argv[1]); $c = json_decode((string) @file_get_contents("composer.json"), true) ?: []; $l = json_decode((string) @file_get_contents("composer.lock"), true);'
+            .' if (! is_array($l)) { return; } echo json_encode(["composer" => ["require" => ["php" => $c["require"]["php"] ?? null], "config" => ["platform" => ["php" => $c["config"]["platform"]["php"] ?? null]]],'
+            .' "lock" => ["packages" => array_map(fn ($p) => ["require" => ["php" => $p["require"]["php"] ?? null]], $l["packages"] ?? [])]]);';
+        try {
+            $found = json_decode($this->execOutput($this->at($site, $site->node_id), 'runuser', ['-u', ServerStack::DEPLOY_USER, '--', ServerStack::phpBinary($php), '-r', $read, $appDir]), true);
+        } catch (\Throwable) {
+            return $php;
+        }
+        if (! is_array($found)) {
+            return $php;
+        }
+        $fits = PhpRequirement::branches($found['composer'], $found['lock']);
+        $home = $site->home_node_id ?? $site->node_id;
+        $installed = [ServerStack::defaultPhpFor($home), ...DB::table('server_php_versions')->where('node_id', $home)->pluck('version')->all()];
+        $choice = PhpRequirement::choose($fits, $php, $installed);
+        if ($choice === null) {
+            throw new RuntimeException("No PHP branch Unharbored offers is new enough for this application's Composer packages. Update composer.lock, or set config.platform.php in composer.json.");
+        }
+        if ($choice['version'] === $php) {
+            return $php;
+        }
+        $needs = PhpRequirement::describe($fits);
+        if (! $choice['installed']) {
+            $built = ServerStack::phpFromSource(ServerStack::osOf($home), $choice['version']) ? ' It is built from source on this server, which takes a while.' : '';
+            throw new RuntimeException("This application's packages need {$needs}, and {$site->node_id} runs PHP {$php}. Nothing was changed. Install PHP {$choice['version']} on the server (Servers, then the server's PHP versions), then deploy again.{$built}");
+        }
+        DB::table('sites')->where('id', $site->id)->update(['php_version' => $choice['version'], 'updated_at' => now()]);
+        $this->say('build', "This application's packages need {$needs}; it was on PHP {$php}, which is older, so it now runs on PHP {$choice['version']}");
+
+        return $choice['version'];
     }
 
     /** One command's output from a server. @param list<string> $args */

@@ -501,6 +501,7 @@ final class ConsoleTest extends TestCase
         $this->assertSame(0, DB::table('operations')->where('kind', 'server_add')->count());
 
         DB::table('sites')->where('id', $this->site->id)->update(['database_cluster_id' => 1]);
+        app(\App\Lib\Sites\Sites::class)->setEnv($this->site, "DB_CONNECTION=mysql\n", 'a managed database is attached');
         $add('web-2.org-1')->assertRedirect()->assertSessionHasNoErrors();
         $op = DB::table('operations')->where('kind', 'server_add')->sole();
         $this->assertSame('admit', json_decode($op->stages, true)[0]['name']);

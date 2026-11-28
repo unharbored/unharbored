@@ -7,6 +7,7 @@ namespace App\Lib\Sites;
 use App\Lib\Audit\Actor;
 use App\Lib\Audit\AuditLog;
 use App\Lib\Cloud\DatabaseClusters;
+use App\Lib\Cloud\DatabaseServers;
 use App\Lib\Gateway\GatewayClient;
 use App\Lib\Resources\ResourceManager;
 use App\Lib\Servers\ServerStack;
@@ -137,10 +138,15 @@ final class DatabaseClones
             return ['DB_CONNECTION' => 'sqlite', 'DB_DATABASE' => (string) $clone->path];
         }
 
+        // A server Unharbored runs is verified against its own certificate, which the site's servers hold; a managed cluster is not.
+        $cluster = $site->database_cluster_id !== null ? $this->resources->findById((int) $site->database_cluster_id) : null;
+        $verified = $cluster !== null && DatabaseServers::isSelfRun($cluster);
+
         return array_filter([
             'DB_CONNECTION' => $clone->engine, 'DB_HOST' => (string) $clone->host, 'DB_PORT' => (string) $clone->port, 'DB_DATABASE' => (string) $clone->database,
             'DB_USERNAME' => (string) $clone->username, 'DB_PASSWORD' => (string) $this->vault->get($site->organization_id, self::vaultKey($id)),
-            'DB_SSLMODE' => $clone->engine === 'pgsql' ? 'require' : null,
+            'DB_SSLMODE' => $clone->engine === 'pgsql' ? ($verified ? 'verify-full' : 'require') : null,
+            'PGSSLROOTCERT' => $clone->engine === 'pgsql' && $verified ? Sites::root($site).'/shared/database-ca.crt' : null,
             // A managed MySQL cluster needs its CA, which the site's servers already hold.
             'MYSQL_ATTR_SSL_CA' => $clone->engine === 'mysql' ? Sites::root($site).'/shared/database-ca.crt' : null,
         ], fn ($v) => $v !== null);
@@ -178,7 +184,7 @@ final class DatabaseClones
                 'name' => 'database-clone',
                 'steps' => [
                     ['id' => 'script', 'type' => 'file', 'path' => self::SCRIPT_PATH, 'mode' => '0600', 'sensitive' => true, 'content_b64' => base64_encode(self::script($target))],
-                    ['id' => 'clone', 'type' => 'command', 'name' => ServerStack::PHP_BINARY, 'args' => [self::SCRIPT_PATH, Sites::root($site), Sites::rootDir($site), SiteBackups::PG_BIN, $engine], 'description' => "copy {$site->name}'s database"],
+                    ['id' => 'clone', 'type' => 'command', 'name' => ServerStack::phpBinary(ServerStack::defaultPhpFor($site->node_id)), 'args' => [self::SCRIPT_PATH, Sites::root($site), Sites::rootDir($site), SiteBackups::PG_BIN, $engine], 'description' => "copy {$site->name}'s database"],
                     ['id' => 'forget', 'type' => 'absent', 'path' => self::SCRIPT_PATH],
                 ],
             ]], timeoutSeconds: 1800, reason: "Clone {$site->name}'s database");
@@ -222,10 +228,10 @@ final class DatabaseClones
             };
             $file = tempnam(sys_get_temp_dir(), 'cm-clone');
             register_shutdown_function(fn () => @unlink($file));
-            $cnf = function (string $host, string $port, string $user, string $password): string {
+            $cnf = function (string $host, string $port, string $user, string $password) use ($env): string {
                 $path = tempnam(sys_get_temp_dir(), 'cm-my'); chmod($path, 0600);
                 $q = fn ($v) => '"'.addcslashes((string) $v, '"\\').'"';
-                file_put_contents($path, "[client]\nhost=".$q($host)."\nport=".$q($port)."\nuser=".$q($user)."\npassword=".$q($password)."\n");
+                file_put_contents($path, "[client]\nhost=".$q($host)."\nport=".$q($port)."\nuser=".$q($user)."\npassword=".$q($password)."\n".(($env['MYSQL_ATTR_SSL_CA'] ?? '') !== '' ? 'ssl-ca='.$q($env['MYSQL_ATTR_SSL_CA'])."\n" : ''));
                 register_shutdown_function(fn () => @unlink($path));
                 return $path;
             };
@@ -252,11 +258,12 @@ final class DatabaseClones
                 putenv('PGHOST='.($env['DB_HOST'] ?? '')); putenv('PGPORT='.($env['DB_PORT'] ?? '5432'));
                 putenv('PGUSER='.($env['DB_USERNAME'] ?? '')); putenv('PGPASSWORD='.($env['DB_PASSWORD'] ?? ''));
                 putenv('PGDATABASE='.$db); putenv('PGSSLMODE='.($env['DB_SSLMODE'] ?? 'prefer'));
+                if (($env['PGSSLROOTCERT'] ?? '') !== '') { putenv('PGSSLROOTCERT='.$env['PGSSLROOTCERT']); }
                 $run("{$pgBin}/pg_dump -Fc --no-owner --no-acl".($t['schema_only'] ? ' --schema-only' : '').' -f '.escapeshellarg($file));
                 putenv('PGUSER='.$t['username']); putenv('PGPASSWORD='.$t['password']); putenv('PGDATABASE='.$t['database']);
                 $run("{$pgBin}/pg_restore --no-owner --no-acl --single-transaction -d ".escapeshellarg($t['database']).' '.escapeshellarg($file));
                 if ($t['statements']) {
-                    $convert(new PDO('pgsql:host='.$t['host'].';port='.$t['port'].';dbname='.$t['database'].';sslmode=require', $t['username'], $t['password']));
+                    $convert(new PDO('pgsql:host='.$t['host'].';port='.$t['port'].';dbname='.$t['database'].(($env['PGSSLROOTCERT'] ?? '') !== '' ? ';sslmode=verify-full;sslrootcert='.$env['PGSSLROOTCERT'] : ';sslmode=require'), $t['username'], $t['password']));
                 }
             } elseif ($engine === 'mysql') {
                 $source = $cnf($env['DB_HOST'] ?? '', $env['DB_PORT'] ?? '3306', $env['DB_USERNAME'] ?? '', $env['DB_PASSWORD'] ?? '');

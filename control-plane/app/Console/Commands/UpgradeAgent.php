@@ -28,6 +28,12 @@ final class UpgradeAgent extends Command
             return self::FAILURE;
         }
 
+        if ($node->archived_at !== null) {
+            $this->error("{$node->node_id} is archived: Unharbored no longer manages it. Restore it first.");
+
+            return self::FAILURE;
+        }
+
         $this->line(sprintf('%s runs agent %s.', $node->node_id, $node->agent_version ?? 'unknown'));
 
         try {

@@ -22,7 +22,7 @@ final class ScaleServers extends Command
     public function handle(ServerScaler $scaler): int
     {
         $failed = false;
-        foreach (DB::table('sites')->whereNotNull('autoscale_pool_id')->whereNotNull('current_release')->get() as $site) {
+        foreach (DB::table('sites')->whereNull('archived_at')->whereNotNull('autoscale_pool_id')->whereNotNull('current_release')->get() as $site) {
             if (! ServerScaler::manages($site)) {
                 continue;
             }

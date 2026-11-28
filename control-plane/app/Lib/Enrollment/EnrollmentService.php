@@ -7,13 +7,16 @@ namespace App\Lib\Enrollment;
 use App\Lib\Audit\Actor;
 use App\Lib\Audit\AuditLog;
 use App\Lib\Audit\Outcome;
+use App\Lib\Cloud\AutoscalePools;
 use App\Lib\Enrollment\Exceptions\EnrollmentRejected;
+use App\Lib\Gateway\OrganisationSync;
 use App\Lib\Pki\CertificateAuthority;
 use App\Lib\Pki\Exceptions\PkiException;
 use App\Lib\Vault\Vault;
 use Carbon\CarbonImmutable;
 use DateTimeInterface;
 use Illuminate\Database\ConnectionInterface;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Facades\DB;
 use SensitiveParameter;
 use Throwable;
@@ -185,7 +188,7 @@ final class EnrollmentService
             nodeId: $grant->node_id,
             organizationId: $grant->organization_id,
             certificatePem: $certificatePem,
-            caCertificatePem: $ca->certificatePem(),
+            caCertificatePem: $this->serverTrustFor($grant->organization_id),
             notAfter: $notAfter,
         );
     }
@@ -215,7 +218,7 @@ final class EnrollmentService
     private function enrollPoolMember(string $tokenHash, int $poolId, string $csrPem, array $reported, ?string $ipAddress): EnrollmentResult
     {
         $grant = $this->db()->table('enrollment_grants')->where('token_hash', $tokenHash)->first();
-        $pools = app(\App\Lib\Cloud\AutoscalePools::class);
+        $pools = app(AutoscalePools::class);
         $reject = function (string $reason, ?Throwable $previous = null) use ($grant, $reported, $ipAddress): never {
             $this->auditRejection($grant->organization_id, $reason, $reported, $ipAddress);
 
@@ -235,7 +238,7 @@ final class EnrollmentService
         // from one Droplet cannot both win.
         try {
             $this->db()->table('nodes')->insert(['node_id' => $nodeId, 'organization_id' => $grant->organization_id, 'created_at' => now(), 'updated_at' => now()]);
-        } catch (\Illuminate\Database\UniqueConstraintViolationException) {
+        } catch (UniqueConstraintViolationException) {
             $reject(EnrollmentRejected::REASON_CONSUMED);
         }
 
@@ -253,7 +256,7 @@ final class EnrollmentService
         $pools->enrolled($poolId, $droplet, $nodeId);
 
         return new EnrollmentResult(nodeId: $nodeId, organizationId: $grant->organization_id, certificatePem: $certificatePem,
-            caCertificatePem: $ca->certificatePem(), notAfter: $notAfter);
+            caCertificatePem: $this->serverTrustFor($grant->organization_id), notAfter: $notAfter);
     }
 
     /**
@@ -312,6 +315,18 @@ final class EnrollmentService
     }
 
     /**
+     * The certificate an agent pins to recognise the gateway: the CA that signed the gateway's one server certificate.
+     * With several teams that is a single CA shared by all of them (control_plane.server_ca_organization), not the
+     * team's own, which only issues and checks that team's node certificates.
+     */
+    public function serverTrustFor(string $organizationId): string
+    {
+        $server = (string) config('control_plane.server_ca_organization');
+
+        return $this->certificateAuthorityFor($server !== '' ? $server : $organizationId)->certificatePem();
+    }
+
+    /**
      * Load or create an organisation's CA.
      *
      * The private key lives in the vault, which means it inherits per-tenant
@@ -349,6 +364,14 @@ final class EnrollmentService
             'created_at' => now(),
             'updated_at' => now(),
         ]);
+
+        // The gateway only accepts agents of the organisations it has been told about, and it is told when it starts.
+        // Without this, the first server of a team made after that waits for a sync nobody runs.
+        try {
+            app(OrganisationSync::class)->push();
+        } catch (Throwable) {
+            // The gateway may be down or not started yet; it is told again when it starts.
+        }
 
         return $ca;
     }

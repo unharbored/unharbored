@@ -26,7 +26,7 @@ const submit = () => form.post('/servers/connect', { onError: () => form.reset('
     <p class="m-0 max-w-[64ch] leading-[1.65] text-muted">For a machine you already have, anywhere. Unharbored logs in over SSH <b>once</b>, checks it, installs the agent and then never uses SSH again. The key or password is held only until the install ends.</p>
   </PageHead>
 
-  <Panel class="max-w-[720px]" title="Where and how to log in" note="Ubuntu 24.04, root or passwordless sudo, ports 80 and 443 free" flush>
+  <Panel class="max-w-[720px]" title="Where and how to log in" note="Ubuntu 22.04, 24.04 or 26.04, root or passwordless sudo, ports 80 and 443 free" flush>
     <form class="flex flex-col gap-4 px-5 pt-4 pb-[22px] sm:px-7 sm:pt-[18px] sm:pb-6" autocomplete="off" @submit.prevent="submit">
       <p class="m-0 text-[13px] text-faint">If the server's firewall restricts SSH, allow <span class="font-semibold text-ink-strong">{{ outboundIp }}</span> to reach it. The server must also reach {{ serverName }} on ports 443 and 9443.</p>
       <div class="flex flex-wrap items-end gap-3 [&>.field]:flex-[1_1_180px]">

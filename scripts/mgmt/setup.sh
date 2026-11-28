@@ -107,6 +107,8 @@ set_env APP_DEBUG false
 set_env APP_URL "https://$CP_HOST"
 set_env CONTROL_PLANE_PUBLIC_URL "https://$AGENT_HOST"
 set_env CONTROL_PLANE_SERVER_NAME "$AGENT_HOST"
+# The gateway has one server certificate, signed by this team's CA (below); every team's agents pin that CA.
+set_env CONTROL_PLANE_SERVER_CA_ORG "$ORG"
 set_env CONTROL_PLANE_SESSION_ADDRESS "$AGENT_HOST:9443"
 set_env DB_CONNECTION sqlite
 set_env DB_DATABASE "$DB"
@@ -118,7 +120,8 @@ set_env SESSION_LIFETIME 720
 # proxies /app to it on the console name. Keys are generated once and kept.
 set_env BROADCAST_CONNECTION reverb
 set_env UNSCRIPTED_TRANSPORT reverb
-if ! grep -q '^REVERB_APP_ID=' "$APP/.env" || ! grep -q '^REVERB_APP_KEY=' "$APP/.env" || ! grep -q '^REVERB_APP_SECRET=' "$APP/.env"; then
+# A blank value counts as missing: the .env copied from .env.example has these lines, empty.
+if ! grep -q '^REVERB_APP_ID=.' "$APP/.env" || ! grep -q '^REVERB_APP_KEY=.' "$APP/.env" || ! grep -q '^REVERB_APP_SECRET=.' "$APP/.env"; then
   set_env REVERB_APP_ID "$(od -An -N4 -tu4 /dev/urandom | tr -d ' ')"
   set_env REVERB_APP_KEY "$(openssl rand -hex 10)"
   set_env REVERB_APP_SECRET "$(openssl rand -hex 20)"
@@ -131,6 +134,8 @@ set_env REVERB_SERVER_PORT 9445
 set_env REVERB_APP_MAX_MESSAGE_SIZE 200000
 set_env REVERB_MAX_REQUEST_SIZE 200000
 set_env UNSCRIPTED_SOCKET_URL "wss://$CP_HOST/app/$(grep '^REVERB_APP_KEY=' "$APP/.env" | cut -d= -f2-)?protocol=7&client=unscripted&version=0.1"
+# The browser terminal reads this one; without it the console falls back to ws://127.0.0.1, the visitor's own machine.
+set_env CONSOLE_SOCKET_URL "wss://$CP_HOST/app/$(grep '^REVERB_APP_KEY=' "$APP/.env" | cut -d= -f2-)?protocol=7&client=console&version=0.1"
 
 chown root:www-data "$APP/.env"; chmod 0640 "$APP/.env"
 

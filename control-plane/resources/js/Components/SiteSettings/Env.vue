@@ -68,7 +68,7 @@ const changes = (v) => Object.entries(marks).filter(([kind]) => (v.changes?.[kin
       <Notice v-if="data.overridden.length > 0" class="justify-start!">⚠ You are overriding {{ data.overridden.length }} injected {{ data.overridden.length === 1 ? 'variable' : 'variables' }}: <template v-for="(k, i) in data.overridden" :key="k"><span class="font-mono">{{ k }}</span><template v-if="i < data.overridden.length - 1">, </template> </template></Notice>
       <template v-if="editing">
         <Field :label="`Custom variables for ${site.name}`" :error="error('envText')" v-slot="{ id }">
-          <textarea :id="id" v-model="envText" rows="14" spellcheck="false"></textarea>
+          <textarea :id="id" v-model="envText" rows="14" class="min-h-[22rem]" spellcheck="false"></textarea>
         </Field>
         <div class="flex flex-wrap gap-2">
           <Btn primary @click="save">Save</Btn>
@@ -76,7 +76,7 @@ const changes = (v) => Object.entries(marks).filter(([kind]) => (v.changes?.[kin
         </div>
       </template>
       <template v-else>
-        <pre class="overflow-x-auto rounded-[10px] border border-line-strong bg-sidebar p-3 font-mono text-[12.5px] leading-[1.75] text-[var(--log-text)]">{{ data.envMasked }}</pre>
+        <pre class="min-h-[22rem] overflow-x-auto rounded-[10px] border border-line-strong bg-sidebar p-3 font-mono text-[12.5px] leading-[1.75] text-[var(--log-text)]">{{ data.envMasked }}</pre>
         <span v-if="error('envText')" class="text-[13px] text-failed">{{ error('envText') }}</span>
         <div class="flex flex-wrap gap-2">
           <Btn @click="revealAndEdit">Reveal and edit</Btn>

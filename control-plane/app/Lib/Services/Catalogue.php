@@ -138,7 +138,7 @@ final class Catalogue
      */
     public function servers(string $organizationId, Definition $def, string $storage): array
     {
-        $nodes = DB::table('nodes')->where('organization_id', $organizationId)
+        $nodes = DB::table('nodes')->where('organization_id', $organizationId)->whereNull('archived_at')
             ->whereNotIn('node_id', DB::table('site_nodes')->whereNotNull('autoscale_pool_id')->select('node_id'))
             ->orderBy('node_id')->get();
         $out = [];

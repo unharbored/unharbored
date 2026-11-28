@@ -310,12 +310,13 @@ final class SiteBackups
             putenv('PGHOST='.($env['DB_HOST'] ?? '')); putenv('PGPORT='.($env['DB_PORT'] ?? '5432'));
             putenv('PGUSER='.($env['DB_USERNAME'] ?? '')); putenv('PGPASSWORD='.($env['DB_PASSWORD'] ?? ''));
             putenv('PGDATABASE='.$db); putenv('PGSSLMODE='.($env['DB_SSLMODE'] ?? 'prefer'));
+            if (($env['PGSSLROOTCERT'] ?? '') !== '') { putenv('PGSSLROOTCERT='.$env['PGSSLROOTCERT']); }
         }
         $cnf = null;
         if ($engine === 'mysql') {
             $cnf = tempnam(sys_get_temp_dir(), 'cm-my'); chmod($cnf, 0600);
             $q = fn ($v) => '"'.addcslashes((string) $v, '"\\').'"';
-            file_put_contents($cnf, "[client]\nhost=".$q($env['DB_HOST'] ?? '')."\nport=".$q($env['DB_PORT'] ?? '3306')."\nuser=".$q($env['DB_USERNAME'] ?? '')."\npassword=".$q($env['DB_PASSWORD'] ?? '')."\n");
+            file_put_contents($cnf, "[client]\nhost=".$q($env['DB_HOST'] ?? '')."\nport=".$q($env['DB_PORT'] ?? '3306')."\nuser=".$q($env['DB_USERNAME'] ?? '')."\npassword=".$q($env['DB_PASSWORD'] ?? '')."\n".(($env['MYSQL_ATTR_SSL_CA'] ?? '') !== '' ? 'ssl-ca='.$q($env['MYSQL_ATTR_SSL_CA'])."\n" : ''));
             register_shutdown_function(fn () => @unlink($cnf));
         }
         $file = tempnam(sys_get_temp_dir(), 'cm-db');

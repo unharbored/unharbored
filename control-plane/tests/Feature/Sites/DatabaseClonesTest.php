@@ -230,6 +230,30 @@ final class DatabaseClonesTest extends TestCase
         $this->assertSame(0, DB::table('database_clones')->count());
     }
 
+    public function test_a_copy_on_a_server_unharbored_runs_is_revealed_with_the_verification_its_site_uses(): void
+    {
+        $site = $this->clusterSite();
+        $id = $this->clones()->clone($site, 'staging_check', false, $this->say());
+        $resources = $this->app->make(ResourceManager::class);
+        $resources->mergeAttributes($resources->findById((int) $site->database_cluster_id), ['mode' => 'self_run']);
+
+        $lines = $this->clones()->reveal($site, $id, Actor::user('1', 'matt@example.com'));
+
+        $this->assertSame('verify-full', $lines['DB_SSLMODE']);
+        $this->assertStringEndsWith('/shared/database-ca.crt', $lines['PGSSLROOTCERT']);
+    }
+
+    public function test_the_copy_program_and_the_backup_program_verify_the_server_they_connect_to(): void
+    {
+        $clone = DatabaseClones::script(['engine' => 'pgsql', 'host' => 'h', 'port' => 5432, 'database' => 'c', 'username' => 'c', 'password' => 'p', 'path' => '/x', 'schema_only' => false, 'statements' => []]);
+        $backup = (new \ReflectionClassConstant(\App\Lib\Sites\SiteBackups::class, 'PRELUDE'))->getValue();
+        foreach ([$clone, $backup] as $program) {
+            $this->assertStringContainsString("putenv('PGSSLROOTCERT='", $program, 'pg_dump and psql check the certificate when the site does.');
+            $this->assertStringContainsString("'ssl-ca='", $program, 'mysqldump and mysql check the certificate when the site does.');
+        }
+        $this->assertStringContainsString("sslmode=verify-full;sslrootcert='", $clone);
+    }
+
     public function test_the_connection_is_revealed_as_env_lines_and_audited(): void
     {
         $site = $this->clusterSite();

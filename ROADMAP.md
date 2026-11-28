@@ -78,7 +78,7 @@ later.
 |---|---|---|
 | Server provisioning recipes (nginx, PHP-FPM, supervisor) | **done** | `app/Lib/Servers/ServerStack`, `server:install-stack`. Proven on a real Droplet; a second run changes nothing but the reloads. |
 | Git integration (GitHub first) | **done** | GitHub App per organisation, created through the manifest flow. Clones use an hour-long installation token scoped to one repository, read-only; nothing long-lived on the node. Deploy keys remain as a fallback. |
-| Bring your own server | **done** | One-time install command for any Ubuntu 24.04 machine; an operation follows it to the stack. |
+| Bring your own server | **done** | One-time install command for any Ubuntu 22.04, 24.04 or 26.04 machine; an operation follows it to the stack. |
 | Remove a server | **done** | Certificate revoked at the gateway at once; Droplets are not destroyed. |
 | Management server rebuild | **done** | `scripts/mgmt/setup.sh`, nightly snapshots, 14 kept on the server and 14 in a Spaces bucket in sfo3, [docs/management-server.md](docs/management-server.md). |
 | Console UI | **done** | Password sign-in (2FA off for now); Sites, Site, Deploy, Settings, Servers, Audit at `cp.example.com`. Built with Unscripted to [docs/design](docs/design/). Every long action is an operation with stages and a log. |

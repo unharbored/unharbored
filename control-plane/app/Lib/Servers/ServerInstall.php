@@ -11,7 +11,6 @@ use App\Lib\Enrollment\EnrollmentService;
 use App\Lib\Operations\OperationRunner;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
-use RuntimeException;
 
 /**
  * Bring your own server: a one-time install command for a machine the
@@ -34,9 +33,10 @@ final class ServerInstall
     ) {}
 
     /**
+     * @param  array<string, mixed>  $meta  what the operation that follows the install is for, when it is not the web stack (a database server)
      * @return array{command: string, operation: int, expires_at: string}
      */
-    public function issue(string $organizationId, string $name, string $baseUrl, string $actor): array
+    public function issue(string $organizationId, string $name, string $baseUrl, string $actor, array $meta = []): array
     {
         if (! preg_match('/^[a-z0-9][a-z0-9-]{0,30}$/', $name)) {
             throw new InvalidArgumentException('Name a server with lowercase letters, digits and dashes.');
@@ -57,7 +57,7 @@ final class ServerInstall
             'created_at' => now(),
             'updated_at' => now(),
         ]);
-        $operation = $this->runner->queueAdopt($organizationId, $nodeId, $installId, 'console', $actor);
+        $operation = $this->runner->queueAdopt($organizationId, $nodeId, $installId, 'console', $actor, $meta);
         DB::table('server_installs')->where('id', $installId)->update(['operation_id' => $operation]);
 
         $this->audit->record($organizationId, Actor::system('control-plane'), 'server.install_link_issued',
@@ -92,7 +92,7 @@ final class ServerInstall
         }
 
         $token = $this->enrollment->issueToken($install->organization_id, $install->node_id, self::TTL_MINUTES * 60);
-        $ca = $this->enrollment->certificateAuthorityFor($install->organization_id)->certificatePem();
+        $ca = $this->enrollment->serverTrustFor($install->organization_id);
 
         $this->audit->record($install->organization_id, Actor::system('control-plane'), 'server.install_script_fetched',
             resourceType: 'node', resourceId: $install->node_id, ipAddress: $fetchedBy);

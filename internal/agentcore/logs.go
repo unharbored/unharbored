@@ -195,10 +195,15 @@ func (t *tailer) discover(atStart bool) {
 	}
 }
 
-// siteOf takes the site from /home/deploy/<site>/..., or from nginx's <site>.error.log.
+// siteOf takes the site from /home/deploy/<site>/..., from /var/log/cloud-manager/<site>/... (where supervised
+// processes log), or from nginx's <site>.error.log.
 func siteOf(path string) string {
 	if strings.HasPrefix(path, "/var/log/nginx/") {
 		return strings.TrimSuffix(filepath.Base(path), ".error.log")
+	}
+	if rest, ok := strings.CutPrefix(path, "/var/log/cloud-manager/"); ok {
+		site, _, _ := strings.Cut(rest, "/")
+		return site
 	}
 	rest := strings.TrimPrefix(path, "/home/deploy/")
 	site, _, _ := strings.Cut(rest, "/")

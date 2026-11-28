@@ -8,6 +8,7 @@ use App\Lib\Audit\Actor;
 use App\Lib\Audit\AuditLog;
 use App\Lib\Gateway\GatewayClient;
 use App\Lib\Gateway\OrganisationSync;
+use App\Lib\Providers\Incus\IncusHost;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 use Throwable;
@@ -44,7 +45,7 @@ final class NodeRemoval
         if ($sites !== []) {
             throw new InvalidArgumentException("{$nodeId} still serves ".implode(', ', $sites).'. Move or remove them first.');
         }
-        if (DB::table('operations')->where('node_id', $nodeId)->whereIn('status', ['queued', 'running'])->exists()) {
+        if (DB::table('operations')->where('node_id', $nodeId)->where('kind', '!=', 'server_delete')->whereIn('status', ['queued', 'running'])->exists()) {
             throw new InvalidArgumentException("An operation is running on {$nodeId}. Wait for it to finish.");
         }
 
@@ -57,9 +58,9 @@ final class NodeRemoval
         if (($node->role ?? null) === 'ingress') {
             throw new InvalidArgumentException('The IPv4 ingress belongs to the Incus host; it goes when the host is removed.');
         }
-        if (($node->role ?? null) === \App\Lib\Providers\Incus\IncusHost::ROLE) {
+        if (($node->role ?? null) === IncusHost::ROLE) {
             // Incus itself stays installed on the machine; only what Unharbored keeps on and about it goes.
-            app(\App\Lib\Providers\Incus\IncusHost::class)->teardown($node->organization_id, $nodeId, static function (): void {}, $actor);
+            app(IncusHost::class)->teardown($node->organization_id, $nodeId, static function (): void {}, $actor);
         }
 
         $uninstalled = false;
@@ -111,7 +112,7 @@ final class NodeRemoval
         if ($sites !== []) {
             throw new InvalidArgumentException("{$nodeId} still serves ".implode(', ', $sites).'. Move or remove them first.');
         }
-        if (DB::table('operations')->where('node_id', $nodeId)->whereIn('status', ['queued', 'running'])->exists()) {
+        if (DB::table('operations')->where('node_id', $nodeId)->where('kind', '!=', 'server_delete')->whereIn('status', ['queued', 'running'])->exists()) {
             throw new InvalidArgumentException("An operation is running on {$nodeId}. Wait for it to finish.");
         }
 

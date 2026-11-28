@@ -120,7 +120,7 @@ final class ServersPageTest extends TestCase
         DB::table('nodes')->insert(['node_id' => 'web-1.org-1', 'organization_id' => 'org-1', 'created_at' => now(), 'updated_at' => now()]);
 
         $node = $this->node();
-        $this->assertContains('Hosts demo. Delete those applications first.', $node['blockers']);
+        $this->assertContains('Hosts demo. Delete those applications first, or use Delete server, which lets you decide for each.', $node['blockers']);
         $this->assertContains('Not a Droplet this platform created.', $node['destroyBlockers']);
     }
 
@@ -132,7 +132,7 @@ final class ServersPageTest extends TestCase
         $offline = $this->node();
         $this->assertFalse($offline['connected']);
         $this->assertStringStartsWith('Unavailable: Not connected. The agent is offline', $offline['tips']['repair']);
-        $this->assertStringContainsString('Unavailable: Hosts demo. Delete those applications first.', $offline['tips']['disconnect']);
+        $this->assertStringContainsString('Unavailable: Hosts demo. Delete those applications first, or use Delete server, which lets you decide for each.', $offline['tips']['disconnect']);
         $this->assertSame(['8.4'], $offline['php']);
         $this->assertContains('8.3', $this->showProps()['phpVersions']);
 

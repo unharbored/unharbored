@@ -27,7 +27,7 @@ final class BackupServices extends Command
         foreach ($due as $s) {
             $this->line("{$s->name}: operation ".$runner->queueTemplateServiceBackup((int) $s->id, 'scheduled', 'schedule', 'schedule'));
         }
-        $skipped = DB::table('services')->whereIn('status', ['running', 'stopped'])->count() - count($due);
+        $skipped = DB::table('services')->whereIn('status', ['running', 'stopped'])->whereNotIn('node_id', DB::table('nodes')->whereNotNull('archived_at')->select('node_id'))->count() - count($due);
         $skipped > 0 && $this->line("{$skipped} left out (backups off, or an operation running).");
 
         return self::SUCCESS;

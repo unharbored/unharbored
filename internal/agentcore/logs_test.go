@@ -163,4 +163,7 @@ func TestTheSiteOfAnNginxErrorLog(t *testing.T) {
 	if got := siteOf("/var/log/nginx/shop.error.log"); got != "shop" {
 		t.Fatal(got)
 	}
+	if got := siteOf("/var/log/cloud-manager/shop/worker.log"); got != "shop" {
+		t.Errorf("a supervised process's log should be named for its site, got %q", got)
+	}
 }

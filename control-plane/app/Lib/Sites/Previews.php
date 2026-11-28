@@ -148,7 +148,7 @@ final class Previews
      */
     public static function server(string $organizationId, ?string $provider = null): ?string
     {
-        return DB::table('nodes')->where('organization_id', $organizationId)->where('role', 'preview')
+        return DB::table('nodes')->where('organization_id', $organizationId)->whereNull('archived_at')->where('role', 'preview')
             ->when($provider !== null, fn ($q) => $q->whereIn('provider', [$provider, 'custom'])->orderByRaw('provider = ? desc', [$provider]))
             ->orderBy('node_id')->value('node_id');
     }
@@ -247,7 +247,7 @@ final class Previews
 
         $runner = app(\App\Lib\Operations\OperationRunner::class);
         $actor = (string) ($payload['sender']['login'] ?? 'github');
-        $parents = DB::table('sites')->where('organization_id', $organizationId)->whereNull('parent_site_id')->get()
+        $parents = DB::table('sites')->where('organization_id', $organizationId)->whereNull('archived_at')->whereNull('parent_site_id')->get()
             ->filter(function ($site) use ($repository) {
                 if ($site->repository === null) {
                     return false; // an image application has no repository
@@ -319,7 +319,7 @@ final class Previews
         $kept = [];
         foreach (preg_split('/\R/', $this->sites->env($parent)) as $line) {
             if (preg_match('/^([A-Za-z_][A-Za-z0-9_]*)=/', $line, $m)) {
-                $databaseKey = str_starts_with($m[1], 'DB_') || $m[1] === 'MYSQL_ATTR_SSL_CA';
+                $databaseKey = str_starts_with($m[1], 'DB_') || in_array($m[1], ['PGSSLROOTCERT', 'MYSQL_ATTR_SSL_CA'], true);
                 if ($database === 'shared' && $databaseKey) {
                     $kept[] = $line;
 
@@ -406,7 +406,7 @@ final class Previews
     public function idle(): array
     {
         $out = [];
-        foreach (DB::table('sites')->whereNotNull('parent_site_id')->whereNotNull('preview_idle_days')->get() as $p) {
+        foreach (DB::table('sites')->whereNull('archived_at')->whereNotNull('parent_site_id')->whereNotNull('preview_idle_days')->get() as $p) {
             $last = DB::table('operations')->where('site_id', $p->id)->whereIn('kind', ['deploy', 'preview_create'])->max('created_at') ?? $p->created_at;
             if (\Illuminate\Support\Carbon::parse($last)->addDays((int) $p->preview_idle_days)->isPast()) {
                 $out[] = $p;

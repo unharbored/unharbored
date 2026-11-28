@@ -68,6 +68,16 @@ return [
     'public_url' => env('CONTROL_PLANE_PUBLIC_URL', ''),
 
     /*
+    | The organisation whose CA signed the gateway's server certificate.
+    |
+    | An agent pins one certificate to recognise the gateway. The gateway has a single server certificate, so on an
+    | installation with several teams every agent must pin that same CA, not its own team's: each team's CA still
+    | issues that team's node certificates and is the only one its agents' client certificates are checked against.
+    | Empty means each organisation's own CA, which is right for an installation with one.
+    */
+    'server_ca_organization' => env('CONTROL_PLANE_SERVER_CA_ORG', ''),
+
+    /*
     |---------------------------------------------------------------------
     | Enrollment rate limit
     |---------------------------------------------------------------------

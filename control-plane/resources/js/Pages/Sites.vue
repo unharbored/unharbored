@@ -1,6 +1,6 @@
 <script setup>
 import { ref } from 'vue';
-import { Head, Link, useForm } from '@inertiajs/vue3';
+import { Head, Link, router, useForm } from '@inertiajs/vue3';
 import Console from '../Layouts/Console.vue';
 import { usePolling } from '../composables/usePolling';
 import Panel from '../Components/ui/Panel.vue';
@@ -17,6 +17,7 @@ defineOptions({ layout: Console });
 
 const props = defineProps({
     sites: Array,
+    archived: { type: Array, default: () => [] },
     activity: Array,
     start: Object,
     form: Object,
@@ -25,7 +26,7 @@ const props = defineProps({
     canAudit: Boolean,
 });
 
-usePolling(['sites', 'activity'], 3000);
+usePolling(['sites', 'activity', 'archived'], 3000);
 
 const creating = ref(false);
 const site = useForm({ server: '', name: '', domain: '', repository: '', branch: 'main', app: true });
@@ -66,17 +67,27 @@ const create = () => site.post('/sites');
   </Panel>
 
   <Panel v-if="canCreate && start && !start.hasSites" title="Getting started" note="Your first application, step by step">
-      <ol class="m-0 flex flex-col gap-2.5 pl-5">
-        <li><b>{{ start.hasServer ? '✓ ' : '' }}Get a server.</b> <span class="text-muted">Connect a cloud account and we create one for you, or add a machine of your own (any Ubuntu 24.04 server you can reach as root).</span>
-          <template v-if="!start.hasServer"> <Btn small href="/account?tab=providers">Connect a cloud account</Btn> <Btn small href="/servers">Add your own server</Btn></template></li>
-        <li><b>{{ start.hasGitHub ? '✓ ' : '' }}Say where your code is.</b> <span class="text-muted">Connect GitHub to pick a repository from a list, or just paste any repository's address when you create the application.</span>
-          <template v-if="!start.hasGitHub"> <Btn small href="/account?tab=github">Connect GitHub</Btn></template></li>
-        <li><b>Create your first application.</b> <span class="text-muted">Choose the repository and a server; we show you what will be created before anything happens.</span>
-          <Btn small primary href="/apps/new">New application</Btn></li>
-        <li><b>{{ start.hasAlerts ? '✓ ' : '' }}Decide where problems are reported.</b> <span class="text-muted">A Slack or Discord webhook, or an email address.</span>
-          <template v-if="!start.hasAlerts"> <Btn small href="/alerts" inertia>Set up alerts</Btn></template></li>
-        <li><b>{{ start.hasTeam ? '✓ ' : '' }}Invite your team</b> <span class="text-muted">(optional). Give people the access they need, from view-only up.</span>
-          <template v-if="!start.hasTeam"> <Btn small href="/account?tab=people" inertia>Invite someone</Btn></template></li>
+      <ol class="m-0 flex list-none flex-col gap-4 p-0">
+        <li class="flex flex-wrap items-center justify-between gap-x-6 gap-y-2.5">
+          <div class="min-w-[260px] flex-1"><b>{{ start.hasServer ? '✓ ' : '' }}Get a server.</b> <span class="text-muted">Connect a cloud account and we create one for you, or add a machine of your own (any Ubuntu 22.04, 24.04 or 26.04 server you can reach as root).</span></div>
+          <div v-if="!start.hasServer" class="flex shrink-0 flex-wrap gap-2"><Btn small href="/account?tab=providers">Connect a cloud account</Btn><Btn small href="/servers">Add your own server</Btn></div>
+        </li>
+        <li class="flex flex-wrap items-center justify-between gap-x-6 gap-y-2.5">
+          <div class="min-w-[260px] flex-1"><b>{{ start.hasGitHub ? '✓ ' : '' }}Say where your code is.</b> <span class="text-muted">Connect GitHub to pick a repository from a list, or just paste any repository's address when you create the application.</span></div>
+          <div v-if="!start.hasGitHub" class="flex shrink-0 flex-wrap gap-2"><Btn small href="/account?tab=github">Connect GitHub</Btn></div>
+        </li>
+        <li class="flex flex-wrap items-center justify-between gap-x-6 gap-y-2.5">
+          <div class="min-w-[260px] flex-1"><b>Create your first application.</b> <span class="text-muted">Choose the repository and a server; we show you what will be created before anything happens.</span></div>
+          <div class="flex shrink-0 flex-wrap gap-2"><Btn small primary href="/apps/new">New application</Btn></div>
+        </li>
+        <li class="flex flex-wrap items-center justify-between gap-x-6 gap-y-2.5">
+          <div class="min-w-[260px] flex-1"><b>{{ start.hasAlerts ? '✓ ' : '' }}Decide where problems are reported.</b> <span class="text-muted">A Slack or Discord webhook, or an email address.</span></div>
+          <div v-if="!start.hasAlerts" class="flex shrink-0 flex-wrap gap-2"><Btn small href="/alerts" inertia>Set up alerts</Btn></div>
+        </li>
+        <li class="flex flex-wrap items-center justify-between gap-x-6 gap-y-2.5">
+          <div class="min-w-[260px] flex-1"><b>{{ start.hasTeam ? '✓ ' : '' }}Invite your team</b> <span class="text-muted">(optional). Give people the access they need, from view-only up.</span></div>
+          <div v-if="!start.hasTeam" class="flex shrink-0 flex-wrap gap-2"><Btn small href="/account?tab=people" inertia>Invite someone</Btn></div>
+        </li>
       </ol>
   </Panel>
 
@@ -109,6 +120,17 @@ const create = () => site.post('/sites');
       </table>
     </div>
   </Panel>
+
+  <details v-if="archived.length > 0" class="rounded-lg border border-line bg-surface">
+    <summary class="cursor-pointer px-5 py-3.5 font-mono text-[11px] tracking-[0.12em] text-muted uppercase">Archived · {{ archived.length }}</summary>
+    <p class="m-0 px-5 pb-2 text-[13px] text-muted">Unharbored no longer manages these. They keep running on their servers exactly as they were.</p>
+    <ul class="m-0 list-none p-0">
+      <li v-for="a in archived" :key="a.id" class="flex flex-wrap items-center justify-between gap-3 border-t border-line-soft px-5 py-3">
+        <span><Link class="font-semibold text-ink-strong" :href="`/site/settings?site=${a.id}&tab=delete`">{{ a.name }}</Link> <span class="text-[13px] text-faint">{{ a.url }} · {{ a.node }} · archived {{ a.since }}</span></span>
+        <Btn v-if="canCreate" small @click="router.post(`/site/settings/${a.id}/restore`, {}, { preserveScroll: true })">Restore</Btn>
+      </li>
+    </ul>
+  </details>
 
   <Panel title="Recent activity" flush>
     <template #actions><a v-if="canAudit" href="/audit">Full audit log →</a></template>

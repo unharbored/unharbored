@@ -42,6 +42,13 @@ final class SiteSettingsPageTest extends TestCase
         }
     }
 
+    public function test_the_php_tab_carries_the_patch_versions_last_read_from_the_server(): void
+    {
+        DB::table('nodes')->insert(['node_id' => 'web-1.org-1', 'organization_id' => 'org-1', 'php_patches' => json_encode(['8.4' => '8.4.13']), 'created_at' => now(), 'updated_at' => now()]);
+
+        $this->get("/site/settings?site={$this->site->id}&tab=runtime")->assertInertia(fn (Assert $page) => $page->where('data.phpPatches', ['8.4' => '8.4.13']));
+    }
+
     public function test_the_first_tab_is_the_variables_and_an_unknown_tab_falls_back_to_it(): void
     {
         $this->get("/site/settings?site={$this->site->id}")->assertInertia(fn (Assert $page) => $page->where('tab', 'env'));

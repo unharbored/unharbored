@@ -3,6 +3,7 @@ import { computed, defineAsyncComponent } from 'vue';
 import { Head, Link, usePage } from '@inertiajs/vue3';
 import Console from '../../Layouts/Console.vue';
 import Btn from '../../Components/ui/Btn.vue';
+import FormError from '../../Components/ui/FormError.vue';
 import Notice from '../../Components/ui/Notice.vue';
 import PageHead from '../../Components/ui/PageHead.vue';
 import NavItem from '../../Components/SiteSettings/NavItem.vue';
@@ -57,7 +58,12 @@ async function deployNow() {
   <template v-else>
     <p v-if="isPreview" class="m-0 max-w-[64ch] leading-[1.65] text-muted">A preview of <Link :href="`/site/settings?site=${site.parent.id}&tab=previews`">{{ site.parent.name }}</Link> at {{ site.branch }}{{ site.previewIdle ? `, deleted after ${site.previewIdle} days without a deploy` : ', kept until deleted' }}.</p>
 
-    <Notice v-if="site.pending" tone="plain">
+    <Notice v-if="site.archived" tone="plain">
+      <span><b>Archived</b> &nbsp;Unharbored no longer manages this application. It keeps running on its server, and every change here is refused until you restore it.</span>
+      <Btn v-if="canEdit" small primary @click="send('restore')">Restore</Btn>
+    </Notice>
+    <FormError :message="page.props.errors?.archived" />
+    <Notice v-if="site.pending && !site.archived" tone="plain">
       <span><b>! pending</b> &nbsp;Changes saved {{ site.pendingSince }} reach the server on the next deploy.</span>
       <Btn small primary @click="deployNow">Deploy now</Btn>
     </Notice>

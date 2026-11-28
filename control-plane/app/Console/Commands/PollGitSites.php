@@ -26,7 +26,7 @@ final class PollGitSites extends Command
     public function handle(GitRemote $remote, OperationRunner $runner): int
     {
         $failed = false;
-        foreach (DB::table('sites')->where('git_source', 'https')->where('push_to_deploy', true)->whereNotNull('current_release')->whereNull('parent_site_id')->get() as $site) {
+        foreach (DB::table('sites')->whereNull('archived_at')->where('git_source', 'https')->where('push_to_deploy', true)->whereNotNull('current_release')->whereNull('parent_site_id')->get() as $site) {
             try {
                 $sha = $remote->publicRefs(GitRepo::parse($site->repository))['shas'][$site->branch] ?? null;
                 if ($sha === null) {

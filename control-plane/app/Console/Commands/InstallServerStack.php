@@ -8,6 +8,7 @@ use App\Lib\Gateway\Exceptions\CommandOutcomeUnknown;
 use App\Lib\Gateway\Exceptions\GatewayUnavailable;
 use App\Lib\Gateway\Exceptions\NodeNotConnected;
 use App\Lib\Gateway\GatewayClient;
+use App\Lib\Servers\PhpSettings;
 use App\Lib\Servers\ServerStack;
 use Illuminate\Console\Command;
 
@@ -40,7 +41,7 @@ final class InstallServerStack extends Command
                 organizationId: $organizationId,
                 nodeId: $nodeId,
                 kind: 'apply_recipe',
-                args: ['spec' => $stack->spec(\App\Lib\Servers\PhpSettings::for($nodeId, \App\Lib\Servers\ServerStack::PHP_VERSION)), 'dry_run' => $dryRun],
+                args: ['spec' => $stack->spec(PhpSettings::for($nodeId, ServerStack::defaultPhpFor($nodeId)), null, ServerStack::osOf($nodeId)), 'dry_run' => $dryRun],
                 timeoutSeconds: self::TIMEOUT_SECONDS,
                 waitSeconds: self::TIMEOUT_SECONDS + 30,
                 reason: $dryRun ? 'Plan server stack' : 'Install server stack',

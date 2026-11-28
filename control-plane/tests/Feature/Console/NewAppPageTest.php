@@ -129,11 +129,11 @@ final class NewAppPageTest extends TestCase
     public function test_changing_provider_does_not_ask_github_for_the_repositories_again(): void
     {
         DB::table('github_apps')->insert(['organization_id' => 'org-1', 'app_id' => 1, 'slug' => 's', 'owner' => 'acme-dev', 'html_url' => 'h', 'created_at' => now(), 'updated_at' => now()]);
-        \Illuminate\Support\Facades\Http::fake();
+        Http::fake();
 
         $options = $this->getJson('/apps/new/options?provider=digitalocean&repositories=0')->assertOk()->json();
 
-        \Illuminate\Support\Facades\Http::assertNothingSent();
+        Http::assertNothingSent();
         $this->assertArrayNotHasKey('repos', $options, 'The page keeps the list it already has.');
         $this->assertArrayHasKey('servers', $options);
     }
@@ -235,5 +235,26 @@ final class NewAppPageTest extends TestCase
         foreach (['inspect', 'branches', 'apps', 'detected', 'source', 'check', 'create'] as $path) {
             $this->postJson("/apps/new/{$path}", ['input' => $this->input()])->assertForbidden();
         }
+    }
+
+    public function test_a_team_with_only_its_own_server_opens_on_that_provider_and_can_create_an_application(): void
+    {
+        // The page has no provider chooser with one provider, so it must open on the provider the server resolved, not DigitalOcean.
+        DB::table('cloud_credentials')->delete();
+        DB::table('nodes')->delete();
+        DB::table('nodes')->insert(['node_id' => 'hbnation-prod.org-1', 'provider' => 'custom', 'organization_id' => 'org-1', 'created_at' => now(), 'updated_at' => now()]);
+        Queue::fake();
+
+        $this->get('/apps/new')->assertOk()->assertInertia(fn (Assert $page) => $page->where('options.provider', 'custom')
+            ->where('options.servers.0.id', 'hbnation-prod.org-1')->has('options.providers', 1));
+
+        $own = ['provider' => 'custom', 'server' => ['mode' => 'existing', 'node' => 'hbnation-prod.org-1']];
+        $this->check($own)->assertOk();
+        $this->postJson('/apps/new/create', ['input' => $this->input($own)])->assertOk();
+        $this->assertSame('custom', DB::table('sites')->where('name', 'shop')->value('provider'));
+
+        // What the page used to send: DigitalOcean, which this team has not connected.
+        $refused = $this->check(['provider' => 'digitalocean', 'name' => 'other', 'server' => ['mode' => 'existing', 'node' => 'hbnation-prod.org-1']])->assertStatus(422);
+        $this->assertStringContainsString('pick a provider that is connected', (string) json_encode($refused->json()));
     }
 }

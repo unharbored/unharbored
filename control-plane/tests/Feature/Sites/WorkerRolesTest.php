@@ -150,12 +150,18 @@ final class WorkerRolesTest extends TestCase
         DB::table('organizations')->insertOrIgnore(['id' => 'org-1', 'name' => 'Acme', 'created_at' => now(), 'updated_at' => now()]);
         DB::table('nodes')->insert(['node_id' => 'work-1.org-1', 'organization_id' => 'org-1', 'created_at' => now(), 'updated_at' => now()]);
         DB::table('sites')->where('id', $site->id)->update(['database_cluster_id' => 1]);
+        $this->sites()->setEnv($site, "DB_CONNECTION=mysql\n", 'a managed database is attached');
         $owner = User::factory()->create();
         DB::table('memberships')->insert(['user_id' => $owner->id, 'organization_id' => 'org-1', 'role' => 'owner', 'created_at' => now(), 'updated_at' => now()]);
         $add = fn (string $role) => $this->actingAs($owner)->post("/site/settings/{$site->id}/servers/add", ['server' => 'work-1.org-1', 'role' => $role]);
 
         $add('primary')->assertSessionHasErrors('server');
         $this->assertSame(0, DB::table('operations')->where('kind', 'server_add')->count());
+
+        $this->sites()->setEnv($site, "DB_CONNECTION=mysql\nCACHE_STORE=file\n", 'test');
+        $add('worker')->assertSessionHasErrors('server');
+        $this->assertSame(0, DB::table('operations')->where('kind', 'server_add')->count(), 'a cache on one server\'s disk cannot be shared');
+        $this->sites()->setEnv($site, "DB_CONNECTION=mysql\nCACHE_STORE=database\n", 'test');
 
         $add('worker')->assertRedirect()->assertSessionHasNoErrors();
         $this->assertSame('worker', json_decode((string) DB::table('operations')->where('kind', 'server_add')->sole()->meta, true)['role']);

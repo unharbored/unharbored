@@ -35,6 +35,14 @@ final class Operations
         ?string $commit = null,
         array $meta = [],
     ): int {
+        // The one door every operation on an application goes through: an archived one is not managed, so nothing is queued for it.
+        if ($siteId !== null) {
+            \App\Lib\Sites\Archiving::refuseIfArchived($siteId);
+        }
+        // The same for an archived server; only the end of its life (delete, destroy) is let through.
+        if ($nodeId !== null && ! in_array($kind, ['server_delete', 'server_destroy'], true)) {
+            \App\Lib\Servers\ServerArchiving::refuseIfNodeArchived($nodeId);
+        }
         $id = DB::table('operations')->insertGetId([
             'organization_id' => $organizationId,
             'kind' => $kind,
@@ -186,10 +194,19 @@ final class Operations
 
         $this->update($id, $fields + [
             'status' => $status,
-            'error' => $error === null ? null : mb_substr($error, 0, 2000),
+            'error' => $error === null ? null : self::shorten($error),
             'stages' => json_encode($stages),
             'finished_at' => now(),
         ]);
+    }
+
+    /**
+     * An error that fits the column. A long one is a command's output, and what failed is at its end, not in the progress lines
+     * before it, so the start is kept for the message that introduces it and most of the room goes to the end.
+     */
+    private static function shorten(string $error): string
+    {
+        return mb_strlen($error) <= 2000 ? $error : mb_substr($error, 0, 300)."\n…\n".mb_substr($error, -1690);
     }
 
     /** @return list<array{name: string, status: string, started_at: ?string, finished_at: ?string}> */

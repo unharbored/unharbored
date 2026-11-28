@@ -93,8 +93,10 @@ final class LocalServicesTest extends TestCase
             $this->assertNotEmpty($prepare[1]['unless']);
         }
         $pg = array_slice(LocalServices::installRecipe('pgsql')['steps'], 2);
-        $this->assertSame(['package', 'service'], array_column($pg, 'type'));
-        $this->assertSame('postgresql-18', $pg[0]['name']);
+        // A server made only for the database never had the stack, and Ubuntu has no PostgreSQL 18: the repository comes first.
+        $this->assertSame(['command', 'package', 'service'], array_column($pg, 'type'));
+        $this->assertSame('pgdg-repo', $pg[0]['id']);
+        $this->assertSame('postgresql-18', $pg[1]['name']);
         $this->assertSame('mysql-server', LocalServices::installRecipe('mysql')['steps'][2]['name']);
         $valkey = LocalServices::installRecipe('valkey')['steps'][2];
         $this->assertStringContainsString('valkey-server', $valkey['args'][1]);

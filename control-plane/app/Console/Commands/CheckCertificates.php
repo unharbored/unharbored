@@ -28,7 +28,7 @@ final class CheckCertificates extends Command
     {
         $failed = false;
         $queued = 0;
-        foreach (DB::table('sites')->where('tls', true)->where('cert_source', 'letsencrypt')->orderBy('id')->pluck('id') as $id) {
+        foreach (DB::table('sites')->whereNull('archived_at')->where('tls', true)->where('cert_source', 'letsencrypt')->orderBy('id')->pluck('id') as $id) {
             try {
                 $runner->queueScheduledCertificateCheck((int) $id, $queued * self::SPACING_SECONDS);
                 $queued++;

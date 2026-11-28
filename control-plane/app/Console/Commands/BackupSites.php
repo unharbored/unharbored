@@ -27,7 +27,7 @@ final class BackupSites extends Command
         if (! $bucket) {
             $this->warn('No backup bucket (run backup:offsite): only databases on their own servers are dumped, to those servers.');
         }
-        foreach (DB::table('sites')->whereNotNull('current_release')->whereNull('parent_site_id')->where('backups', true)
+        foreach (DB::table('sites')->whereNull('archived_at')->whereNotNull('current_release')->whereNull('parent_site_id')->where('backups', true)
             ->when(! $bucket, fn ($q) => $q->where('database_mode', 'like', 'local:%'))->orderBy('id')->get() as $site) {
             $this->line("{$site->name}: operation ".$runner->queueSiteBackup($site->id, 'nightly', 'schedule', 'schedule'));
         }

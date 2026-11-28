@@ -7,7 +7,9 @@ namespace Tests\Feature\Cloud;
 use App\Lib\Audit\AuditLog;
 use App\Lib\Cloud\CredentialStore;
 use App\Lib\Cloud\DatabaseClusters;
+use App\Lib\Gateway\GatewayClient;
 use App\Lib\Resources\ResourceManager;
+use App\Lib\Resources\ResourceRecord;
 use App\Lib\Resources\ResourceState;
 use App\Lib\Sites\Sites;
 use App\Lib\Vault\KeyManager;
@@ -48,25 +50,25 @@ final class DatabaseClustersTest extends TestCase
         $this->app->forgetInstance(KeyManager::class);
         $this->app->forgetInstance(Vault::class);
         Cache::store('array')->clear();
-        $this->http = new HttpFactory();
-        $this->resources = new ResourceManager(new AuditLog());
-        $this->sites = new Sites($this->app->make(Vault::class), new AuditLog());
+        $this->http = new HttpFactory;
+        $this->resources = new ResourceManager(new AuditLog);
+        $this->sites = new Sites($this->app->make(Vault::class), new AuditLog);
         DB::table('organizations')->insert(['id' => 'org-1', 'name' => 'Org', 'created_at' => now(), 'updated_at' => now()]);
         $this->credentials()->connect('org-1', 'dop_v1_test_token');
     }
 
     private function credentials(): CredentialStore
     {
-        return new CredentialStore(vault: $this->app->make(Vault::class), http: $this->http, cache: Cache::store('array'), audit: new AuditLog());
+        return new CredentialStore(vault: $this->app->make(Vault::class), http: $this->http, cache: Cache::store('array'), audit: new AuditLog);
     }
 
     private function clusters(): DatabaseClusters
     {
-        return new DatabaseClusters($this->credentials(), $this->resources, $this->sites, new AuditLog(),
-            new \App\Lib\Gateway\GatewayClient('http://gw.test', 't', $this->http, new AuditLog()));
+        return new DatabaseClusters($this->credentials(), $this->resources, $this->sites, new AuditLog,
+            new GatewayClient('http://gw.test', 't', $this->http, new AuditLog));
     }
 
-    private function onlineCluster(): \App\Lib\Resources\ResourceRecord
+    private function onlineCluster(): ResourceRecord
     {
         $this->http->fake([self::API.'/databases' => $this->http->response(['database' => ['id' => 'db-uuid', 'status' => 'creating']], 201)]);
         $record = $this->clusters()->create('org-1', 'main', 'pg', 'nyc3', 'db-s-1vcpu-1gb');
@@ -366,5 +368,109 @@ final class DatabaseClustersTest extends TestCase
 
         $this->expectExceptionMessage('shop-app');
         $this->clusters()->destroy($cluster);
+    }
+
+    private function accountClusters(): void
+    {
+        $this->http->fake([
+            self::API.'/databases?*' => $this->http->response(['databases' => [
+                ['id' => 'old-pg', 'name' => 'Legacy PG', 'engine' => 'pg', 'status' => 'online', 'version' => '15', 'region' => 'nyc3', 'size' => 'db-s-2vcpu-4gb', 'num_nodes' => 2, 'tags' => []],
+                ['id' => 'old-my', 'name' => 'legacy-my', 'engine' => 'mysql', 'status' => 'online', 'version' => '8', 'region' => 'nyc3', 'size' => 'db-s-1vcpu-1gb', 'tags' => ['prod']],
+                ['id' => 'cache', 'name' => 'cache', 'engine' => 'valkey', 'status' => 'online', 'tags' => []],
+                ['id' => 'ours', 'name' => 'cm-forked', 'engine' => 'pg', 'status' => 'online', 'tags' => ['cloud-manager', 'temporary']],
+                ['id' => 'building', 'name' => 'building', 'engine' => 'pg', 'status' => 'creating', 'tags' => []],
+                ['id' => 'db-uuid', 'name' => 'cm-main', 'engine' => 'pg', 'status' => 'online', 'tags' => []],
+            ]]),
+        ]);
+    }
+
+    private function adoptable(): ResourceRecord
+    {
+        $this->http->fake([
+            self::API.'/databases/old-pg/ca' => $this->http->response(['ca' => ['certificate' => base64_encode("-----BEGIN CERTIFICATE-----\nCA\n-----END CERTIFICATE-----\n")]]),
+            self::API.'/databases/old-pg' => $this->http->response(['database' => ['id' => 'old-pg', 'name' => 'Legacy PG', 'engine' => 'pg', 'status' => 'online', 'version' => '15',
+                'region' => 'nyc3', 'size' => 'db-s-2vcpu-4gb', 'connection' => ['host' => 'legacy.db.ondigitalocean.com', 'port' => 25060, 'password' => 'admin-secret']]]),
+        ]);
+
+        return $this->clusters()->adopt('org-1', 'old-pg');
+    }
+
+    public function test_only_online_postgres_and_mysql_clusters_not_made_here_are_offered(): void
+    {
+        $this->onlineCluster();
+        $this->accountClusters();
+
+        $found = $this->clusters()->discover('org-1');
+
+        $this->assertSame(['old-pg', 'old-my'], array_column($found, 'id'), 'Not Valkey, not ours by tag, not still creating, not one already tracked.');
+        $this->assertSame(['Legacy PG', 'pg', 2], [$found[0]['name'], $found[0]['engine'], $found[0]['nodes']]);
+    }
+
+    public function test_bringing_a_cluster_in_records_it_and_changes_nothing_at_digitalocean(): void
+    {
+        $record = $this->adoptable();
+
+        $this->assertSame(ResourceState::Active, $record->state);
+        $this->assertSame('legacy-pg', $record->slug);
+        $this->assertSame('old-pg', $record->externalId);
+        $this->assertTrue(DatabaseClusters::isAdopted($record));
+        $this->assertSame(['legacy.db.ondigitalocean.com', 25060], [$record->attributes['host'], $record->attributes['port']]);
+        $this->assertStringNotContainsString('admin-secret', (string) json_encode($record->attributes), 'The admin password is never stored.');
+        $this->http->assertNotSent(fn (Request $r) => $r->method() !== 'GET');
+        $this->assertSame(1, DB::table('audit_records')->where('action', 'database_cluster.adopted')->count());
+    }
+
+    public function test_a_cluster_cannot_be_brought_in_twice_or_when_it_is_not_postgres_or_mysql_or_not_there(): void
+    {
+        $this->adoptable();
+        try {
+            $this->clusters()->adopt('org-1', 'old-pg');
+            $this->fail('Twice.');
+        } catch (InvalidArgumentException $e) {
+            $this->assertStringContainsString('already here', $e->getMessage());
+        }
+
+        $this->http->fake([
+            self::API.'/databases/cache' => $this->http->response(['database' => ['id' => 'cache', 'engine' => 'valkey', 'status' => 'online']]),
+            self::API.'/databases/gone' => $this->http->response(['message' => 'not found'], 404),
+        ]);
+        foreach (['cache' => 'Only PostgreSQL and MySQL', 'gone' => 'not in your DigitalOcean account'] as $id => $why) {
+            try {
+                $this->clusters()->adopt('org-1', $id);
+                $this->fail($id);
+            } catch (InvalidArgumentException $e) {
+                $this->assertStringContainsString($why, $e->getMessage());
+            }
+        }
+    }
+
+    public function test_attaching_to_a_brought_in_cluster_never_meets_a_database_or_user_already_there(): void
+    {
+        $cluster = $this->adoptable();
+        $site = $this->siteOnDroplet();
+        $this->http->fake([
+            self::API.'/databases/old-pg/dbs' => $this->http->response(['dbs' => [['name' => 'defaultdb'], ['name' => 'shop_app']]]),
+            self::API.'/databases/old-pg/users' => $this->http->response(['users' => [['name' => 'doadmin']]]),
+        ]);
+
+        try {
+            $this->clusters()->attach($site, $cluster);
+            $this->fail('The existing database must stop it.');
+        } catch (InvalidArgumentException $e) {
+            $this->assertStringContainsString('already has a database or user called shop_app', $e->getMessage());
+        }
+        $this->http->assertNotSent(fn (Request $r) => $r->method() !== 'GET');
+        $this->assertNull(DB::table('sites')->where('id', $site->id)->value('database_cluster_id'));
+    }
+
+    public function test_destroying_a_brought_in_cluster_only_forgets_it(): void
+    {
+        $cluster = $this->adoptable();
+        $this->http->fake();
+
+        $this->clusters()->destroy($cluster);
+
+        $this->http->assertNotSent(fn (Request $r) => $r->method() === 'DELETE');
+        $this->assertSame(ResourceState::Deleted, $this->resources->findById($cluster->id)->state);
     }
 }

@@ -4,13 +4,17 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers;
 
+use App\Lib\Audit\Actor;
+use App\Lib\Audit\AuditLog;
 use App\Lib\Auth\Org;
 use App\Lib\Sites\Sites;
 use Illuminate\Database\Query\Builder;
+use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -33,8 +37,12 @@ final class LogsController extends Controller
             'limit' => min(max((int) $request->query('limit', 200), 50), 1000),
         ];
 
+        $app = $filters['site'] > 0 ? DB::table('sites')->where('organization_id', Org::id())->where('id', $filters['site'])->value('name') : null;
+
         return Inertia::render('Logs', [
             'filters' => $filters,
+            'app' => $app,
+            'canClear' => $app !== null && Gate::allows('edit'),
             'choices' => fn () => $this->choices($filters['site']),
             'lines' => fn () => $this->lines($filters),
         ]);
@@ -55,6 +63,25 @@ final class LogsController extends Controller
         }
 
         return $query;
+    }
+
+    /**
+     * Deletes what the panel holds of one application's logs: its Laravel, worker and process lines and its own nginx error log.
+     * The server-wide nginx and PHP logs are shared with other applications and are left, and so are the files on the server.
+     */
+    public function clear(Request $request): RedirectResponse
+    {
+        Gate::authorize('edit');
+        $row = DB::table('sites')->where('organization_id', Org::id())->where('id', (int) $request->input('site'))->first();
+        if ($row === null) {
+            throw ValidationException::withMessages(['site' => 'No such application.']);
+        }
+        $deleted = DB::table('log_lines')->where('organization_id', Org::id())->whereIn('node_id', Sites::nodes($row))
+            ->whereIn('source', ["laravel:{$row->name}", "worker:{$row->name}", "app:{$row->name}", "nginx.error:{$row->name}"])->delete();
+        app(AuditLog::class)->record(Org::id(), Actor::user((string) $request->user()->id, $request->user()->email), 'site.logs_cleared',
+            resourceType: 'site', resourceId: "{$row->node_id}/{$row->name}", metadata: ['lines' => $deleted]);
+
+        return redirect("/site/logs?site={$row->id}");
     }
 
     /** Servers and sources that have logged this week, for the filters. */

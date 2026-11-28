@@ -2,6 +2,8 @@
 
 namespace App\Providers;
 
+use App\Lib\Auth\Roles;
+use App\Lib\Saas\SaasServiceProvider;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\RateLimiter;
@@ -14,7 +16,10 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        // The private SaaS layer, when this copy has it (the public export does not).
+        if (class_exists(SaasServiceProvider::class)) {
+            $this->app->register(SaasServiceProvider::class);
+        }
     }
 
     /**
@@ -22,7 +27,7 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        \App\Lib\Auth\Roles::register();
+        Roles::register();
 
         // Enrollment is the only unauthenticated route, and the only one that
         // does public key cryptography on request. The limit bounds the cost

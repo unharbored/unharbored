@@ -97,6 +97,7 @@ class OrganisationIsolationTest extends TestCase
         $response = $call();
         $this->assertSame(200, $response->status(), $response->getContent());
         $this->assertSame('postgresql://u:pw@db.example.com:25060/app?sslmode=require', $response->json('url'));
+        $this->assertSame(['host' => 'db.example.com', 'port' => '25060', 'database' => 'app', 'username' => 'u', 'password' => 'pw'], collect($response->json('details'))->only(['host', 'port', 'database', 'username', 'password'])->all());
         $this->assertDatabaseHas('audit_records', ['action' => 'site.database_connection_read', 'organization_id' => 'org-1']);
     }
 }

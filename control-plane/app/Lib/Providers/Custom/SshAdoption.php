@@ -9,6 +9,8 @@ use App\Lib\Audit\AuditLog;
 use App\Lib\Cloud\CloudInit;
 use App\Lib\Enrollment\EnrollmentService;
 use App\Lib\Operations\OperationRunner;
+use App\Lib\Providers\Incus\IncusHost;
+use App\Lib\Servers\ServerStack;
 use App\Lib\Vault\Vault;
 use Closure;
 use Illuminate\Support\Facades\DB;
@@ -96,11 +98,11 @@ final class SshAdoption
         }
 
         if ($role !== null) {
-            if ($role !== \App\Lib\Providers\Incus\IncusHost::ROLE) {
+            if ($role !== IncusHost::ROLE) {
                 throw new InvalidArgumentException('role: an Incus host, or nothing.');
             }
             try {
-                app(\App\Lib\Providers\Incus\IncusHost::class)->assertCanAdd($organizationId);
+                app(IncusHost::class)->assertCanAdd($organizationId);
             } catch (InvalidArgumentException $e) {
                 throw new InvalidArgumentException('name: '.$e->getMessage());
             }
@@ -155,7 +157,7 @@ final class SshAdoption
 
             $stage('install');
             $token = $this->enrollment->issueToken($adoption->organization_id, $adoption->node_id, 15 * 60);
-            $ca = $this->enrollment->certificateAuthorityFor($adoption->organization_id)->certificatePem();
+            $ca = $this->enrollment->serverTrustFor($adoption->organization_id);
             $script = base64_encode($this->cloudInit->installScript($adoption->node_id, $token, $ca));
             $r = $shell->run('umask 077; f=$(mktemp) && printf %s '.escapeshellarg($script)." | base64 -d > \"\$f\" && {$sudo}bash \"\$f\"; rc=\$?; rm -f \"\$f\"; exit \$rc", 600);
             foreach (array_slice(preg_split('/\R/', trim($r['output'])) ?: [], -8) as $line) {
@@ -192,7 +194,7 @@ final class SshAdoption
         };
 
         $os = trim($out('. /etc/os-release 2>/dev/null; echo "${ID:-?} ${VERSION_ID:-?}"')['output']);
-        $check('Ubuntu 24.04', $os === 'ubuntu 24.04', "It runs {$os}; the stack is built for Ubuntu 24.04.", $os);
+        $check('Ubuntu 22.04, 24.04 or 26.04', in_array($os, array_map(fn ($v) => "ubuntu {$v}", ServerStack::SUPPORTED_OS), true), "It runs {$os}; the stack is built for Ubuntu 22.04, 24.04 and 26.04.", $os);
 
         $arch = trim($out('uname -m')['output']);
         $check('x86_64 or aarch64', in_array($arch, ['x86_64', 'aarch64'], true), "Architecture {$arch} has no agent build.", $arch);

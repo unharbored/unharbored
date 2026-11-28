@@ -4,6 +4,10 @@ declare(strict_types=1);
 
 namespace Tests\Feature\Servers;
 
+use App\Lib\Agent\AgentRelease;
+use App\Lib\Cloud\CloudInit;
+use App\Lib\Enrollment\EnrollmentService;
+use App\Lib\Gateway\GatewayClient;
 use App\Lib\Operations\OperationRunner;
 use App\Lib\Operations\Operations;
 use App\Lib\Servers\ServerInstall;
@@ -45,9 +49,9 @@ final class ServerInstallTest extends TestCase
             'control_plane.gateway_token' => 't',
             'control_plane.gateway_url' => 'http://gw.test',
         ]);
-        $this->http = new HttpFactory();
+        $this->http = new HttpFactory;
         $this->app->instance(HttpFactory::class, $this->http);
-        foreach ([KeyManager::class, Vault::class, \App\Lib\Agent\AgentRelease::class, \App\Lib\Cloud\CloudInit::class, \App\Lib\Gateway\GatewayClient::class, OperationRunner::class, ServerInstall::class] as $c) {
+        foreach ([KeyManager::class, Vault::class, AgentRelease::class, CloudInit::class, GatewayClient::class, OperationRunner::class, ServerInstall::class] as $c) {
             $this->app->forgetInstance($c);
         }
         DB::table('organizations')->insert(['id' => 'org-1', 'name' => 'Org', 'created_at' => now(), 'updated_at' => now()]);
@@ -134,7 +138,7 @@ final class ServerInstallTest extends TestCase
         $this->assertSame('waiting', $this->app->make(OperationRunner::class)->run($issued['operation']));
         $op = DB::table('operations')->find($issued['operation']);
         $this->assertSame('running', $op->status);
-        $this->assertSame('install', (new Operations())->currentStage($issued['operation']));
+        $this->assertSame('install', (new Operations)->currentStage($issued['operation']));
     }
 
     public function test_an_unused_link_that_expires_fails_the_operation(): void
@@ -167,5 +171,49 @@ final class ServerInstallTest extends TestCase
         $this->assertSame(['done', 'done', 'done'], array_column(json_decode($op->stages, true), 'status'));
         $this->assertStringContainsString('script fetched from 203.0.113.9', $op->log);
         $this->assertStringContainsString('package nginx installed', $op->log);
+    }
+
+    public function test_a_server_on_26_04_has_its_release_recorded_and_the_stack_installs_php_8_5(): void
+    {
+        $issued = $this->issue();
+        DB::table('server_installs')->update(['fetched_at' => now(), 'fetched_by' => '203.0.113.9']);
+        DB::table('nodes')->updateOrInsert(['node_id' => 'hetzner-1.org-1'], ['organization_id' => 'org-1', 'created_at' => now(), 'updated_at' => now()]);
+        $sent = [];
+        $this->http->fake(function ($request) use (&$sent) {
+            if (str_ends_with($request->url(), '/commands')) {
+                $sent[] = $request->data();
+                $exec = ($request->data()['kind'] ?? '') === 'exec';
+
+                return $this->http->response(['status' => 'succeeded', 'outcome_known' => true,
+                    'detail' => $exec ? ['output' => "ubuntu 26.04\n"] : ['run' => ['steps' => [['action' => 'create', 'description' => 'package php8.5-fpm installed']]]]]);
+            }
+
+            return $this->http->response(['connected' => true], 200);
+        });
+
+        $this->assertSame('succeeded', $this->app->make(OperationRunner::class)->run($issued['operation']));
+
+        $this->assertSame('26.04', DB::table('nodes')->where('node_id', 'hetzner-1.org-1')->value('os_version'));
+        $recipe = collect($sent)->first(fn ($c) => ($c['kind'] ?? '') === 'apply_recipe');
+        $packages = collect($recipe['args']['spec']['steps'])->where('type', 'package')->pluck('name')->all();
+        $this->assertContains('php8.5-fpm', $packages);
+        $this->assertNotContains('php8.4-fpm', $packages);
+        $this->assertStringContainsString('Ubuntu 26.04', DB::table('operations')->find($issued['operation'])->log);
+    }
+
+    public function test_a_second_teams_script_pins_the_ca_that_signed_the_gateways_certificate_not_its_own(): void
+    {
+        DB::table('organizations')->insert(['id' => 'org-2', 'name' => 'Second', 'created_at' => now(), 'updated_at' => now()]);
+        config(['control_plane.server_ca_organization' => 'org-1']);
+        Queue::fake();
+        $enrollment = $this->app->make(EnrollmentService::class);
+        $issued = $this->app->make(ServerInstall::class)->issue('org-2', 'hbnation-prod', 'https://cp.example.com', 'matt@example.com');
+
+        $script = $this->app->make(ServerInstall::class)->script($this->secret($issued), '203.0.113.9');
+
+        // The script is written with unix line endings; PEM from the CA has CRLF.
+        $pem = fn (string $org) => trim(str_replace("\r\n", "\n", $enrollment->certificateAuthorityFor($org)->certificatePem()));
+        $this->assertStringContainsString($pem('org-1'), $script);
+        $this->assertStringNotContainsString($pem('org-2'), $script);
     }
 }

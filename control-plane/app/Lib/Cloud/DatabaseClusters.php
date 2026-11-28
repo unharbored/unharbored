@@ -111,6 +111,83 @@ final class DatabaseClusters
         return $this->resources->recordExternalId($resource, (string) $id);
     }
 
+    /** Engines that can be brought in: Valkey has one password for the whole cluster, so it is only ever made here. */
+    public const ADOPTABLE = ['pg', 'mysql'];
+
+    /**
+     * The online PostgreSQL and MySQL clusters in the organisation's DigitalOcean account that Unharbored is not
+     * tracking and did not make (its own carry the cloud-manager tag and belong to reconciliation).
+     *
+     * @return list<array{id: string, name: string, engine: string, version: ?string, region: ?string, size: ?string, nodes: int}>
+     */
+    public function discover(string $organizationId): array
+    {
+        $client = $this->credentials->clientFor($organizationId, 'Listing database clusters that can be brought in', Actor::system('control-plane'));
+        $known = DB::table('resources')->where('organization_id', $organizationId)->where('type', 'database_cluster')
+            ->where('state', '!=', 'deleted')->whereNotNull('external_id')->pluck('external_id')->map(fn ($id) => (string) $id)->all();
+        $found = [];
+        foreach ($client->paginate('databases', 'databases') as $db) {
+            if (! in_array($db['engine'] ?? null, self::ADOPTABLE, true) || ($db['status'] ?? null) !== 'online'
+                || in_array((string) ($db['id'] ?? ''), $known, true) || in_array('cloud-manager', $db['tags'] ?? [], true)) {
+                continue;
+            }
+            $found[] = ['id' => (string) $db['id'], 'name' => (string) ($db['name'] ?? $db['id']), 'engine' => (string) $db['engine'], 'version' => $db['version'] ?? null,
+                'region' => $db['region'] ?? null, 'size' => $db['size'] ?? null, 'nodes' => (int) ($db['num_nodes'] ?? 1)];
+        }
+
+        return $found;
+    }
+
+    /**
+     * Brings a cluster the organisation already has into Unharbored, so sites can be attached to it. Nothing at
+     * DigitalOcean changes: no tag is added, no user, database or firewall rule touched. It is marked as not made
+     * here, so destroying it only forgets it.
+     */
+    public function adopt(string $organizationId, string $clusterId): ResourceRecord
+    {
+        $actor = Actor::system('control-plane');
+        $client = $this->credentials->clientFor($organizationId, 'Bringing in a database cluster', $actor);
+        try {
+            $db = $client->get('databases/'.rawurlencode($clusterId))['database'] ?? [];
+        } catch (RequestFailed $e) {
+            throw new InvalidArgumentException($e->status === 404 ? 'That cluster is not in your DigitalOcean account.' : 'DigitalOcean could not be asked about that cluster: '.$e->getMessage());
+        }
+        if (($db['id'] ?? null) === null || ! in_array($db['engine'] ?? null, self::ADOPTABLE, true)) {
+            throw new InvalidArgumentException('Only PostgreSQL and MySQL clusters can be brought in.');
+        }
+        if (($db['status'] ?? null) !== 'online') {
+            throw new InvalidArgumentException('That cluster is not online yet.');
+        }
+        if (DB::table('resources')->where('organization_id', $organizationId)->where('type', 'database_cluster')->where('state', '!=', 'deleted')->where('external_id', (string) $db['id'])->exists()) {
+            throw new InvalidArgumentException('That cluster is already here.');
+        }
+
+        $base = trim(substr((string) preg_replace('/[^a-z0-9-]+/', '-', strtolower((string) ($db['name'] ?? 'cluster'))), 0, 26), '-') ?: 'cluster';
+        $slug = $base;
+        for ($n = 2; DB::table('resources')->where('organization_id', $organizationId)->where('type', 'database_cluster')->where('slug', $slug)->exists(); $n++) {
+            $slug = "{$base}-{$n}";
+        }
+        $ca = base64_decode((string) ($client->get('databases/'.rawurlencode($clusterId).'/ca')['ca']['certificate'] ?? ''), true) ?: null;
+        $resource = $this->resources->declare($organizationId, 'database_cluster', $slug, [
+            'engine' => $db['engine'], 'region' => $db['region'] ?? null, 'size' => $db['size'] ?? null, 'version' => $db['version'] ?? null,
+            'host' => $db['connection']['host'] ?? null, 'port' => $db['connection']['port'] ?? null, 'ca_pem' => $ca,
+            'adopted' => true, 'adopted_name' => $db['name'] ?? null,
+        ]);
+        $resource = $this->resources->transition($resource, ResourceState::Provisioning, reason: 'Bringing in an existing cluster', actor: $actor);
+        $resource = $this->resources->recordExternalId($resource, (string) $db['id']);
+        $resource = $this->resources->transition($resource, ResourceState::Active, reason: 'Existing cluster brought in; nothing was changed at DigitalOcean', actor: $actor);
+        $this->audit->record($organizationId, $actor, 'database_cluster.adopted', resourceType: 'database_cluster', resourceId: $slug,
+            metadata: ['cluster' => $db['name'] ?? null, 'engine' => $db['engine']]);
+
+        return $resource;
+    }
+
+    /** True for a cluster that was brought in rather than made here. */
+    public static function isAdopted(ResourceRecord $cluster): bool
+    {
+        return ($cluster->attributes['adopted'] ?? false) === true;
+    }
+
     /**
      * Reads the cluster's state from DigitalOcean. Online: becomes active,
      * with its address and CA recorded (neither is secret). The admin
@@ -166,6 +243,9 @@ final class DatabaseClusters
         $name = str_replace('-', '_', $site->name);
         $done = [];
         $this->assertDatabaseIsOurs((object) ((array) $site + ['database_cluster_id' => $cluster->id]), $name);
+        if (self::isAdopted($cluster) && ($site->database_cluster_id ?? null) !== $cluster->id) {
+            $this->assertNothingCalledOnAdopted($client, $cid, $cluster, $name);
+        }
 
         // Both kinds of cluster admit the site's server first: the grant
         // below runs from it.
@@ -219,6 +299,7 @@ final class DatabaseClusters
             // only the mode; MySQL needs the CA, which the site setup writes.
             // The one the other engine needs is removed, not left behind.
             'DB_SSLMODE' => $engine === 'pg' ? 'require' : null,
+            'PGSSLROOTCERT' => null,
             'MYSQL_ATTR_SSL_CA' => $engine === 'mysql' ? Sites::root($site).'/shared/database-ca.crt' : null,
         ], "Database cluster {$cluster->slug}");
         DB::table('sites')->where('id', $site->id)->update(['database_cluster_id' => $cluster->id, 'database_mode' => 'cluster', 'updated_at' => now()]);
@@ -231,6 +312,19 @@ final class DatabaseClusters
             resourceId: "{$site->node_id}/{$site->name}", metadata: ['cluster' => $cluster->slug, 'database' => $name]);
 
         return $done;
+    }
+
+    /**
+     * A cluster that was brought in already holds other people's databases and users. Attaching makes a database and a
+     * user named for the site and resets that user's password, so it must never meet one that already exists.
+     */
+    private function assertNothingCalledOnAdopted(Client $client, string $cid, ResourceRecord $cluster, string $name): void
+    {
+        $taken = array_map(fn ($d) => $d['name'] ?? null, $client->get("databases/{$cid}/dbs")['dbs'] ?? []);
+        $users = array_map(fn ($u) => $u['name'] ?? null, $client->get("databases/{$cid}/users")['users'] ?? []);
+        if (in_array($name, $taken, true) || in_array($name, $users, true)) {
+            throw new InvalidArgumentException("{$cluster->slug} already has a database or user called {$name}, and it was not made here, so it is not touched. Give the application another name or use a different cluster.");
+        }
     }
 
     /**
@@ -558,7 +652,7 @@ final class DatabaseClusters
                     ['id' => 'ca', 'type' => 'file', 'path' => $caFile, 'content_b64' => base64_encode((string) ($cluster->attributes['ca_pem'] ?? '')), 'mode' => '0600'],
                     ['id' => 'script', 'type' => 'file', 'path' => $script, 'mode' => '0600', 'sensitive' => true,
                         'content_b64' => base64_encode(self::grantScript($engine, (string) $cluster->attributes['host'], (int) $cluster->attributes['port'], $name, $adminUser, $adminPassword, $caFile))],
-                    ['id' => 'grant', 'type' => 'command', 'name' => ServerStack::PHP_BINARY, 'args' => [$script], 'description' => "grant {$name} its database"],
+                    ['id' => 'grant', 'type' => 'command', 'name' => ServerStack::phpBinary(ServerStack::defaultPhpFor($site->node_id)), 'args' => [$script], 'description' => "grant {$name} its database"],
                     ['id' => 'forget', 'type' => 'absent', 'path' => $script],
                 ],
             ]], timeoutSeconds: 60, reason: "Grant {$site->name} its database");
@@ -677,6 +771,13 @@ final class DatabaseClusters
         }
 
         $actor = Actor::system('control-plane');
+        if (self::isAdopted($cluster)) {
+            // Not ours to destroy: forget it and leave it, and everything on it, as it is at DigitalOcean.
+            $cluster = $this->resources->transition($cluster, ResourceState::Deleting, reason: 'Forgotten; it was brought in, so it is not destroyed', actor: $actor);
+            $this->resources->transition($cluster, ResourceState::Deleted, reason: 'Forgotten, not destroyed', actor: $actor);
+
+            return;
+        }
         if ($cluster->externalId !== null) {
             $client = $this->credentials->clientFor($cluster->organizationId, "Destroying database cluster {$cluster->slug}", $actor);
             try {

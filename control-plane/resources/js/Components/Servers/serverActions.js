@@ -9,7 +9,7 @@ import { serverUrl } from './api.js';
  * `node` is a ref to the server; `before` runs first (it clears the errors kept from the last action).
  */
 export function useServerActions(node, before = () => {}) {
-    const unavailable = computed(() => !node.value.connected || node.value.busy);
+    const unavailable = computed(() => !node.value.connected || node.value.busy || node.value.archived);
 
     /** Posts to /servers/<node>/<rest>. The server answers with the operation's page or goes back. */
     async function act(rest, data = {}, message = null, tone = 'info', ok = undefined) {
@@ -23,7 +23,7 @@ export function useServerActions(node, before = () => {}) {
     /** A tooltip for something that needs the agent online and the server idle. */
     const busyReason = (does) => (!unavailable.value
         ? does
-        : `Unavailable: ${node.value.connected ? 'an operation is already running on this server.' : 'the agent is offline.'}`);
+        : `Unavailable: ${node.value.archived ? 'this server is archived. Restore it first.' : node.value.connected ? 'an operation is already running on this server.' : 'the agent is offline.'}`);
 
     return { unavailable, act, busyReason };
 }

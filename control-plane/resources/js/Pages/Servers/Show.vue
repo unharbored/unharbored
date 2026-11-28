@@ -26,6 +26,7 @@ const props = defineProps({
     phpVersions: Array,
     consoles: Object,
     node: Object,
+    underneath: Object,
     commands: Object,
 });
 
@@ -35,6 +36,8 @@ const n = computed(() => props.node);
 const { errors, clearErrors } = useKeptErrors();
 const { unavailable, act, busyReason } = useServerActions(n, clearErrors);
 const readonly = computed(() => !can.value.infrastructure);
+// An archived server can be read, not changed: only Settings stays open, for Restore and the ways to end its life.
+const frozen = computed(() => readonly.value || n.value.archived);
 
 usePolling(['node', 'commands', 'gatewayUp'], 5000);
 
@@ -45,7 +48,7 @@ function pick(key) {
 
         return;
     }
-    router.get(window.location.pathname, { tab: key, chart: props.chart }, { only: ['tab'], preserveState: true, preserveScroll: true, replace: true });
+    router.get(window.location.pathname, { tab: key, chart: props.chart }, { only: ['tab', 'underneath'], preserveState: true, preserveScroll: true, replace: true });
 }
 
 const firewalling = ref(false);
@@ -89,6 +92,10 @@ const reserved = computed(() => n.value.role === 'incus-host' || n.value.role ==
   </div>
 
   <Notice v-if="!gatewayUp" tone="bad">The gateway is unreachable. Every server keeps serving its sites, but none can be commanded until it returns.</Notice>
+  <Notice v-if="n.archived" tone="plain">
+    <span>Archived: Unharbored no longer manages this server. It keeps running as it was, and nothing here can change it until it is restored.</span>
+    <Btn v-if="can.infrastructure" small @click="act('restore')">Restore</Btn>
+  </Notice>
   <Notice v-if="!can.infrastructure" tone="plain">You can look at this server but not change it: setting up, repairing, locking down or removing a server needs a Manager or an Owner.</Notice>
   <div v-if="n.phpWarnings && Object.keys(n.phpWarnings).length > 0 && tab === 'overview'" class="flex flex-col gap-1">
     <Notice v-for="(list, v) in n.phpWarnings" :key="v" tone="plain" class="!justify-start">⚠ PHP {{ v }}: {{ list.join(' ') }}</Notice>
@@ -105,12 +112,12 @@ const reserved = computed(() => n.value.role === 'incus-host' || n.value.role ==
 
   <Tabs :tabs="tabs" :model-value="tab" label="Server" @update:model-value="pick" />
 
-  <Overview v-if="tab === 'overview' && !reserved" :node="n" :php-versions="phpVersions" :errors="errors" :readonly="readonly" :act="act" :clear="clearErrors" @firewall="firewalling = true" />
+  <Overview v-if="tab === 'overview' && !reserved" :node="n" :php-versions="phpVersions" :errors="errors" :readonly="frozen" :act="act" :clear="clearErrors" @firewall="firewalling = true" />
   <Metrics v-else-if="tab === 'metrics'" :node="n" :chart="chart" />
   <Commands v-else-if="tab === 'commands'" :commands="commands" :console-ready="consoleReady" :console-note="consoleNote" @console="consoling = true" />
-  <Access v-else-if="tab === 'access'" :node="n" :errors="errors" :unavailable="unavailable" :readonly="readonly" :act="act" :busy-reason="busyReason" @firewall="firewalling = true" />
-  <Settings v-else-if="tab === 'settings'" :node="n" :errors="errors" :unavailable="unavailable" :readonly="readonly" :act="act" />
+  <Access v-else-if="tab === 'access'" :node="n" :errors="errors" :unavailable="unavailable" :readonly="frozen" :act="act" :busy-reason="busyReason" @firewall="firewalling = true" />
+  <Settings v-else-if="tab === 'settings'" :node="n" :underneath="underneath" :errors="errors" :unavailable="unavailable" :readonly="readonly" :act="act" />
 
-  <FirewallDrawer :open="firewalling" :node="n" :errors="errors" :readonly="readonly" :unavailable="unavailable" :tip="busyTip" @close="firewalling = false" @act="clearErrors" />
+  <FirewallDrawer :open="firewalling" :node="n" :errors="errors" :readonly="frozen" :unavailable="unavailable" :tip="busyTip" @close="firewalling = false" @act="clearErrors" />
   <ConsoleDrawer :open="consoling" :node="n" :socket-url="consoles.socketUrl" @close="consoling = false" />
 </template>

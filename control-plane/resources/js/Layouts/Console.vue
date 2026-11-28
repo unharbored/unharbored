@@ -10,7 +10,9 @@ const page = usePage();
 const routeName = computed(() => page.props.routeName);
 // The tab a sub-page belongs to (the containers view is under Servers).
 const sectionOf = { 'server.containers': 'servers', 'servers.connect': 'servers', 'servers.show': 'servers', 'servers.pool': 'servers' };
-const section = computed(() => sectionOf[routeName.value] ?? routeName.value);
+// Tabs an add-on layer asks for ([key, url, name, keys], shared by the server); none in the public edition.
+const extras = computed(() => page.props.navExtras ?? []);
+const section = computed(() => extras.value.find(([key]) => routeName.value?.startsWith(key))?.[0] ?? sectionOf[routeName.value] ?? routeName.value);
 const site = computed(() => page.props.shell.site);
 const shell = computed(() => page.props.shell);
 const can = computed(() => page.props.can);
@@ -19,7 +21,7 @@ const flashError = computed(() => page.props.flashError);
 
 const tabs = computed(() => {
     const r = shell.value.routes;
-    return [
+    const list = [
         ['sites', r.sites, 'Applications', 'G S'],
         ['services', r.services, 'Services', 'G E'],
         ['servers', r.servers, 'Servers', 'G V'],
@@ -28,7 +30,8 @@ const tabs = computed(() => {
         ['alerts', r.alerts, 'Alerts', 'G L'],
         ['audit', r.audit, 'Audit log', 'G A'],
         ['tokens', r.tokens, 'API tokens', 'G T'],
-    ].filter(([key]) => (key === 'audit' ? can.value['audit.read'] : key === 'tokens' ? can.value['tokens.read'] : true));
+    ];
+    return [...list.filter(([key]) => (key === 'audit' ? can.value['audit.read'] : key === 'tokens' ? can.value['tokens.read'] : true)), ...extras.value];
 });
 
 // Operations running now, and those that finished in the last ten minutes: the way back to one after leaving its page.

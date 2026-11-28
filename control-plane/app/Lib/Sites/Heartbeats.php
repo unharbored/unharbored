@@ -73,7 +73,7 @@ final class Heartbeats
         $now = Carbon::now('UTC')->toDateTimeImmutable();
         $out = [];
         $rows = DB::table('heartbeats as h')->join('sites as s', 's.id', '=', 'h.site_id')->leftJoin('scheduled_jobs as j', 'j.id', '=', 'h.scheduled_job_id')
-            ->where('s.organization_id', $organizationId)->whereNotNull('s.current_release')
+            ->where('s.organization_id', $organizationId)->whereNull('s.archived_at')->whereNotNull('s.current_release')
             ->select('h.id', 'h.last_ping_at', 'h.created_at', 'h.scheduled_job_id', 's.id as site_id', 's.name as site', 's.scheduler', 'j.name as job', 'j.cron', 'j.paused')
             ->get();
 
