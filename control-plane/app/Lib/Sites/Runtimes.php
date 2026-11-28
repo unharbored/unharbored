@@ -247,7 +247,9 @@ final class Runtimes
         $user = ServerStack::DEPLOY_USER;
         $usesNode = $nodeVersion !== '' || preg_match('/\b(npm|npx|node|yarn|pnpm|corepack)\b/', $script) === 1;
         $config = ['tool' => $usesNode ? 'node' : null, 'version' => $nodeVersion !== '' ? $nodeVersion : '22'];
-        $exports = 'export PHP='.escapeshellarg($phpBinary).' COMPOSER='.escapeshellarg($phpBinary.' '.ServerStack::COMPOSER).' COMPOSER_NO_INTERACTION=1'
+        // COMPOSER is a shell variable the script uses and is not exported: Composer reads an environment variable of that name as
+        // the file to use instead of composer.json, and given "php composer" it fails looking for a file called that.
+        $exports = 'COMPOSER='.escapeshellarg($phpBinary.' '.ServerStack::COMPOSER)."\nexport PHP=".escapeshellarg($phpBinary).' COMPOSER_NO_INTERACTION=1 COMPOSER_IGNORE_PLATFORM_REQS=php+'
             .($composerHome === null ? '' : ' COMPOSER_HOME='.escapeshellarg($composerHome));
         $first = trim((string) strtok(trim($script), "\n"));
 

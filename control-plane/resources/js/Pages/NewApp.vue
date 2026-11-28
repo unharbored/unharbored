@@ -35,6 +35,14 @@ const s = reactive({
     database: 'sqlite', cache: 'database', storage: 'disk', dbSize: 'db-s-1vcpu-1gb', cacheSize: 'db-s-1vcpu-1gb',
     envText: '', previews: false, backups: false, filter: '', account: '', other: '', git: {}, otherError: '',
 });
+// The server says which provider the page opens on: the first connected one when DigitalOcean is not. With one provider
+// there is no chooser, so a form left on DigitalOcean would be refused with "pick a provider that is connected".
+if (props.options.provider && props.options.provider !== s.provider) {
+    s.provider = props.options.provider;
+    getJson('/apps/new/defaults', { provider: s.provider }).then((d) => {
+        if (d.ok) Object.assign(s, { region: d.data.region, size: d.data.size, poolSize: d.data.poolSize });
+    });
+}
 const branches = ref([]);
 const detected = ref({});
 const apps = ref({});
@@ -240,7 +248,19 @@ const monthly = computed(() => review.value.monthly ?? { low: 0, high: 0 });
         <FormError v-if="s.otherError !== ''" :message="s.otherError" />
         <span v-if="opts.appReady" class="text-[13px] text-faint"><a href="#" @click.prevent="fromList = true">Choose from my GitHub repositories instead</a>.</span>
         </template>
-        <span v-if="hasGit" class="text-[13px] text-faint"><b class="font-semibold text-ink-strong">{{ s.git.display }}</b> · {{ s.git.note }}</span>
+        <Notice v-if="hasGit && s.git.source === 'deploy_key'">
+          <div class="flex min-w-0 flex-1 flex-col gap-2">
+            <span class="text-base"><b>{{ s.git.display }} is private, so you will add a key to {{ s.git.host }}.</b></span>
+            <ol class="m-0 flex list-decimal flex-col gap-1 pl-5 text-[15px]">
+              <li>Click <b>Create application</b> at the end. Unharbored makes a key for this application only.</li>
+              <li>The next page shows the key with a <b>Copy key</b> button.</li>
+              <li>Paste it into {{ s.git.host }} as a <b>read-only deploy key</b> (the repository's Settings → Repository → Deploy keys; on GitHub, Settings → Deploy keys). Leave write access off.</li>
+            </ol>
+            <span class="text-[15px]">Setup waits for that, then carries on by itself. It takes about a minute, and it is needed because {{ s.git.host }} will not let the server read a private repository without it.</span>
+            <span class="text-[13px]">To check you are talking to the real {{ s.git.host }}, its host key is <code class="font-mono break-all">{{ s.git.fingerprint }}</code>.</span>
+          </div>
+        </Notice>
+        <span v-else-if="hasGit" class="text-[13px] text-faint"><b class="font-semibold text-ink-strong">{{ s.git.display }}</b> · {{ s.git.note }}</span>
     </Panel>
 
     <Panel v-if="s.repo !== ''" :title="`On ${s.branch}`">

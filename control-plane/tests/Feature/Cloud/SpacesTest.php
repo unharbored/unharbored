@@ -52,9 +52,9 @@ final class SpacesTest extends TestCase
         $this->app->forgetInstance(KeyManager::class);
         $this->app->forgetInstance(Vault::class);
         Cache::store('array')->clear();
-        $this->http = new HttpFactory();
-        $this->resources = new ResourceManager(new AuditLog());
-        $this->sites = new Sites($this->app->make(Vault::class), new AuditLog());
+        $this->http = new HttpFactory;
+        $this->resources = new ResourceManager(new AuditLog);
+        $this->sites = new Sites($this->app->make(Vault::class), new AuditLog);
         DB::table('organizations')->insert(['id' => 'org-1', 'name' => 'Org', 'created_at' => now(), 'updated_at' => now()]);
         $this->credentials()->connect('org-1', 'dop_v1_test_token');
 
@@ -81,12 +81,12 @@ final class SpacesTest extends TestCase
 
     private function credentials(): CredentialStore
     {
-        return new CredentialStore(vault: $this->app->make(Vault::class), http: $this->http, cache: Cache::store('array'), audit: new AuditLog());
+        return new CredentialStore(vault: $this->app->make(Vault::class), http: $this->http, cache: Cache::store('array'), audit: new AuditLog);
     }
 
     private function spaces(): Spaces
     {
-        return new Spaces($this->credentials(), $this->resources, $this->sites, new AuditLog(), $this->http, $this->app->make(Vault::class));
+        return new Spaces($this->credentials(), $this->resources, $this->sites, new AuditLog, $this->http, $this->app->make(Vault::class));
     }
 
     private function site(): stdClass
@@ -183,6 +183,44 @@ final class SpacesTest extends TestCase
         $this->spaces()->attach($this->sites->find('web-1.org-1', 'shop'));
     }
 
+    public function test_deleting_a_bucket_erases_its_files_then_the_bucket_and_both_keys_and_the_site_goes_back_to_its_disk(): void
+    {
+        $site = $this->site();
+        $this->spaces()->attach($site);
+        $bucketRow = $this->sites->find('web-1.org-1', 'shop');
+        $bucket = $this->resources->findById((int) $bucketRow->bucket_id)->externalId;
+        $this->sent = [];
+        $this->listed = ['a.jpg', 'docs/b.png'];
+
+        $done = $this->spaces()->remove($bucketRow);
+
+        $deleted = array_values(array_map(fn ($r) => $r->url(), array_filter($this->sent, fn ($r) => $r->method() === 'DELETE')));
+        $this->assertCount(2, array_filter($deleted, fn ($u) => str_contains($u, "/{$bucket}/") && str_contains($u, 'X-Amz-Signature')), 'Every file is deleted first.');
+        $this->assertContains("https://nyc3.digitaloceanspaces.com/{$bucket}", $deleted, 'Then the bucket.');
+        $this->assertContains('https://'.self::API.'/spaces/keys/AK3', $deleted, 'The temporary full-access key does not outlive it.');
+        $this->assertContains('https://'.self::API.'/spaces/keys/AK2', $deleted, "The site's own key goes too.");
+        $this->assertStringContainsString('with 2 files', implode(' ', $done));
+
+        $fresh = $this->sites->find('web-1.org-1', 'shop');
+        $this->assertNull($fresh->bucket_id);
+        $this->assertSame('deleted', $this->resources->findById((int) $bucketRow->bucket_id)->state->value);
+        $env = $this->sites->env($fresh);
+        $this->assertStringContainsString("FILESYSTEM_DISK=local\n", $env);
+        $this->assertStringNotContainsString('AWS_BUCKET', $env);
+    }
+
+    public function test_a_bucket_the_user_brought_is_let_go_of_and_never_deleted_or_emptied(): void
+    {
+        $site = $this->site();
+        $this->spaces()->useExisting($site, 'https://nyc3.digitaloceanspaces.com/', 'client-uploads', 'AKEXISTING', 'SKEXISTING', 'nyc3');
+        $this->sent = [];
+
+        $this->spaces()->remove($this->sites->find('web-1.org-1', 'shop'));
+
+        $this->assertSame([], $this->sent, 'Nothing is asked of the service: no key, no listing, no delete.');
+        $this->assertNull($this->sites->find('web-1.org-1', 'shop')->bucket_id);
+    }
+
     public function test_the_signature_matches_the_aws_reference(): void
     {
         // AWS's published GET-object example, adapted to an empty body: the
@@ -230,5 +268,71 @@ final class SpacesTest extends TestCase
         $this->assertSame("\x1f\x8b", substr($put->body(), 0, 2), 'The compressed snapshot is what goes up.');
         $deleted = array_values(array_map(fn ($r) => basename(parse_url($r->url(), PHP_URL_PATH)), array_filter($this->sent, fn ($r) => $r->method() === 'DELETE')));
         $this->assertSame(['control-plane-20260101T000000Z.sqlite.gz'], $deleted, 'The listing as faked holds three; two are kept.');
+    }
+
+    public function test_an_existing_bucket_is_checked_with_a_read_only_request_and_nothing_is_created_or_changed_there(): void
+    {
+        $site = $this->site();
+        $this->sent = [];
+
+        $this->spaces()->useExisting($site, 'https://nyc3.digitaloceanspaces.com/', 'client-uploads', 'AKEXISTING', 'SKEXISTING', 'nyc3', 'https://cdn.example.com');
+
+        $this->assertSame(['HEAD'], array_values(array_unique(array_map(fn ($r) => $r->method(), $this->sent))), 'One read-only request, and no key or bucket is made or deleted.');
+        $this->assertSame('https://nyc3.digitaloceanspaces.com/client-uploads', $this->sent[0]->url());
+        $this->assertStringContainsString('Credential=AKEXISTING/', $this->sent[0]->header('Authorization')[0]);
+        $this->assertStringContainsString('/nyc3/s3/aws4_request', $this->sent[0]->header('Authorization')[0], 'It is signed for the region given.');
+
+        $fresh = $this->sites->find('web-1.org-1', 'shop');
+        $env = $this->sites->env($fresh);
+        foreach (["FILESYSTEM_DISK=s3\n", "AWS_ACCESS_KEY_ID=AKEXISTING\n", "AWS_SECRET_ACCESS_KEY=SKEXISTING\n", "AWS_BUCKET=client-uploads\n", "AWS_DEFAULT_REGION=nyc3\n",
+            "AWS_ENDPOINT=https://nyc3.digitaloceanspaces.com\n", "AWS_URL=https://cdn.example.com\n", "AWS_USE_PATH_STYLE_ENDPOINT=true\n"] as $line) {
+            $this->assertStringContainsString($line, $env);
+        }
+        $bucket = $this->resources->findById((int) $fresh->bucket_id);
+        $this->assertSame(['client-uploads', true], [$bucket->externalId, $bucket->attributes['adopted']]);
+        $this->assertStringNotContainsString('SKEXISTING', (string) json_encode($bucket->attributes), 'The secret lives in the vault, not on the resource.');
+    }
+
+    public function test_an_existing_bucket_is_refused_for_a_bad_address_a_refused_key_or_a_missing_bucket_and_nothing_is_recorded(): void
+    {
+        $site = $this->site();
+        foreach ([
+            ['http://nyc3.digitaloceanspaces.com', 'https://'],
+            ['https://localhost', 'https://'],
+            ['https://10.0.0.5', 'https://'],
+            ['https://169.254.169.254', 'https://'],
+            ['https://s3.example.net/some/path', 'https://'],
+        ] as [$endpoint, $why]) {
+            try {
+                $this->spaces()->useExisting($site, $endpoint, 'client-uploads', 'AK', 'SK');
+                $this->fail($endpoint);
+            } catch (InvalidArgumentException $e) {
+                $this->assertStringContainsString($why, $e->getMessage(), $endpoint);
+            }
+        }
+
+        foreach ([403 => 'refused that key', 404 => 'There is no bucket called client-uploads'] as $status => $why) {
+            $http = new HttpFactory;
+            $http->fake(['*' => $http->response('', $status)]);
+            $spaces = new Spaces($this->credentials(), $this->resources, $this->sites, new AuditLog, $http, $this->app->make(Vault::class));
+            try {
+                $spaces->useExisting($site, 'https://s3.example.net', 'client-uploads', 'AK', 'SK');
+                $this->fail((string) $status);
+            } catch (InvalidArgumentException $e) {
+                $this->assertStringContainsString($why, $e->getMessage());
+            }
+        }
+        $this->assertNull(DB::table('sites')->where('id', $site->id)->value('bucket_id'));
+        $this->assertStringNotContainsString('AWS_BUCKET', $this->sites->env($this->sites->find('web-1.org-1', 'shop')));
+        $this->assertSame(0, DB::table('resources')->where('type', 'bucket')->count());
+    }
+
+    public function test_a_site_with_a_bucket_is_not_given_an_existing_one_over_it(): void
+    {
+        $site = $this->site();
+        $this->spaces()->useExisting($site, 'https://s3.example.net', 'client-uploads', 'AK', 'SK');
+
+        $this->expectExceptionMessage('already has a bucket');
+        $this->spaces()->useExisting($this->sites->find('web-1.org-1', 'shop'), 'https://s3.example.net', 'another', 'AK', 'SK');
     }
 }

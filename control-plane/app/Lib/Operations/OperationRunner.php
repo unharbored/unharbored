@@ -329,8 +329,8 @@ final class OperationRunner
     public function queuePhpSettings(string $nodeId, string $version, string $trigger, string $actor): int
     {
         $node = $this->ordinaryNode($nodeId);
-        if (! ServerStack::supportsPhp($version)) {
-            throw new \InvalidArgumentException("PHP {$version} is not offered.");
+        if (($why = ServerStack::phpRefusal($nodeId, $version)) !== null) {
+            throw new \InvalidArgumentException($why);
         }
 
         return $this->queue($this->operations->create($node->organization_id, 'php_settings', "Apply the php{$version} settings on {$nodeId}", $trigger, $actor,
@@ -340,11 +340,11 @@ final class OperationRunner
     public function queueInstallPhp(string $nodeId, string $version, string $trigger, string $actor): int
     {
         $node = $this->ordinaryNode($nodeId);
-        if (! ServerStack::supportsPhp($version)) {
-            throw new \InvalidArgumentException("PHP {$version} is not offered.");
+        if (($why = ServerStack::phpRefusal($nodeId, $version)) !== null) {
+            throw new \InvalidArgumentException($why);
         }
 
-        return $this->queue($this->operations->create($node->organization_id, 'install_php', "Install PHP {$version} on {$nodeId}", $trigger, $actor,
+        return $this->queue($this->operations->create($node->organization_id, 'install_php', "Install PHP {$version} on {$nodeId}".(ServerStack::phpFromSource(ServerStack::osOf($nodeId), $version) ? ' (built from source; this takes a while)' : ''), $trigger, $actor,
             ['install'], nodeId: $nodeId, meta: ['version' => $version]));
     }
 
@@ -352,8 +352,8 @@ final class OperationRunner
     public function queueUpdatePhp(string $nodeId, string $version, string $trigger, string $actor): int
     {
         $node = $this->ordinaryNode($nodeId);
-        if (! ServerStack::supportsPhp($version)) {
-            throw new \InvalidArgumentException("PHP {$version} is not offered.");
+        if (($why = ServerStack::phpRefusal($nodeId, $version)) !== null) {
+            throw new \InvalidArgumentException($why);
         }
 
         return $this->queue($this->operations->create($node->organization_id, 'update_php', "Update PHP {$version} on {$nodeId}", $trigger, $actor,
@@ -381,6 +381,7 @@ final class OperationRunner
     {
         $site = $this->site($siteId);
         $cluster = DB::table('resources')->where('id', $clusterResourceId)->first() ?? throw new RuntimeException('No such cluster.');
+        \App\Lib\Servers\ServerArchiving::refuseIfClusterArchived($clusterResourceId);
 
         return $this->queue($this->operations->create($site->organization_id, 'database_attach', "Attach {$site->name} to {$cluster->slug}", $trigger, $actor,
             ['attach'], $site->id, $site->node_id, meta: ['cluster' => $clusterResourceId]));
@@ -502,6 +503,7 @@ final class OperationRunner
         if (\App\Lib\Providers\Incus\IncusHost::reserved(DB::table('nodes')->where('node_id', $nodeId)->value('role'))) {
             throw new \InvalidArgumentException("{$nodeId} is an Incus host or its ingress: nothing runs on it directly.");
         }
+        \App\Lib\Servers\ServerArchiving::refuseIfNodeArchived($nodeId);
         $short = strstr($nodeId, '.', true) ?: $nodeId;
         $now = gmdate('Ymd\THis\Z');
 
@@ -519,13 +521,14 @@ final class OperationRunner
             ['create', 'online', 'servers', 'certificate'], $site->id, $site->node_id));
     }
 
-    public function queueServerRemove(int $siteId, string $nodeId, string $trigger, string $actor): int
+    /** $destroy: once it is off the application, destroy the server too (a server this platform made, that nothing else uses). */
+    public function queueServerRemove(int $siteId, string $nodeId, string $trigger, string $actor, bool $destroy = false, bool $dispatch = true): int
     {
         $site = $this->site($siteId);
         $short = strstr($nodeId, '.', true) ?: $nodeId;
 
-        return $this->queue($this->operations->create($site->organization_id, 'server_remove', "Remove {$short} from {$site->name}", $trigger, $actor,
-            ['remove'], $site->id, $site->node_id, meta: ['node' => $nodeId]));
+        return $this->queueIf($dispatch, $this->operations->create($site->organization_id, 'server_remove', "Remove {$short} from {$site->name}".($destroy ? ' and destroy it' : ''), $trigger, $actor,
+            ['remove'], $site->id, $site->node_id, meta: ['node' => $nodeId, 'destroy' => $destroy]));
     }
 
     /**
@@ -622,6 +625,15 @@ final class OperationRunner
             ['bucket'], $site->id, $site->node_id));
     }
 
+    /** Deletes the site's Spaces bucket and everything in it. */
+    public function queueStorageDetach(int $siteId, string $trigger, string $actor): int
+    {
+        $site = $this->site($siteId);
+
+        return $this->queue($this->operations->create($site->organization_id, 'storage_detach', "Delete {$site->name} uploads bucket", $trigger, $actor,
+            ['bucket'], $site->id, $site->node_id));
+    }
+
     /**
      * Makes a preview of the site at a branch, then builds it like any
      * deploy and gives it HTTPS.
@@ -645,8 +657,31 @@ final class OperationRunner
     public function queueRetry(int $id, string $actor, ?array $server = null): int
     {
         $operation = $this->operations->find($id) ?? throw new \InvalidArgumentException("No operation {$id}.");
+        if ($operation->kind === 'server_delete' && $operation->status === 'failed') {
+            // What is done is gone from the list it works from, so running it again carries on where it stopped.
+            $this->operations->reopen($id);
+            $this->operations->log($id, 'retry', "by {$actor}");
+
+            return $this->queue($id);
+        }
+        if ($operation->kind === 'database_create' && $operation->status === 'failed') {
+            // The server exists and its agent connected; only its setup failed. Setup is safe to run again from the start.
+            $meta = json_decode((string) $operation->meta, true) ?: [];
+            $resources = app(\App\Lib\Resources\ResourceManager::class);
+            $cluster = $resources->find($operation->organization_id, 'database_cluster', (string) ($meta['slug'] ?? ''));
+            $server = $resources->find($operation->organization_id, 'server', \App\Lib\Cloud\DatabaseServers::serverSlug((string) ($meta['slug'] ?? '')));
+            if (($meta['provider'] ?? 'digitalocean') === 'digitalocean' || $cluster === null || $cluster->state !== \App\Lib\Resources\ResourceState::Failed
+                || $server === null || $server->state === \App\Lib\Resources\ResourceState::Deleted) {
+                throw new \InvalidArgumentException('Its server is gone, so this cannot carry on. Destroy the cluster and make it again.');
+            }
+            $resources->transition($cluster, \App\Lib\Resources\ResourceState::Provisioning, reason: "Setting up again, by {$actor}", actor: \App\Lib\Audit\Actor::system('control-plane'));
+            $this->operations->reopen($id);
+            $this->operations->log($id, 'retry', "setup again, by {$actor}");
+
+            return $this->queue($id);
+        }
         if ($operation->kind !== 'app_create' || $operation->status !== 'failed') {
-            throw new \InvalidArgumentException('Only a failed new application can be retried.');
+            throw new \InvalidArgumentException('Only a failed new application or database cluster can be retried.');
         }
         $meta = json_decode((string) $operation->meta, true) ?: [];
         $failed = collect($meta['steps'])->first(fn ($s) => ! in_array($s, $meta['done'], true));
@@ -676,14 +711,14 @@ final class OperationRunner
     }
 
     /** Removes a preview: off its server, then every record of it. */
-    public function queuePreviewDestroy(int $previewId, string $trigger, string $actor): int
+    public function queuePreviewDestroy(int $previewId, string $trigger, string $actor, bool $dispatch = true): int
     {
         $preview = $this->site($previewId);
         if ($preview->parent_site_id === null) {
             throw new \InvalidArgumentException("{$preview->name} is not a preview.");
         }
 
-        return $this->queue($this->operations->create($preview->organization_id, 'preview_destroy', "Delete preview {$preview->name}", $trigger, $actor,
+        return $this->queueIf($dispatch, $this->operations->create($preview->organization_id, 'preview_destroy', "Delete preview {$preview->name}", $trigger, $actor,
             ['remove'], $preview->id, $preview->node_id, meta: ['name' => $preview->name, 'domain' => $preview->domain]));
     }
 
@@ -692,7 +727,7 @@ final class OperationRunner
      * and files are kept unless $deleteData, so the safe default loses
      * nothing. Servers and shared clusters are never destroyed here.
      */
-    public function queueAppDelete(int $siteId, bool $deleteData, string $trigger, string $actor): int
+    public function queueAppDelete(int $siteId, bool $deleteData, string $trigger, string $actor, bool $dispatch = true): int
     {
         $site = $this->site($siteId);
 
@@ -709,7 +744,7 @@ final class OperationRunner
             throw new \InvalidArgumentException("{$site->name} autoscales and keeps uploads on its own servers; deleting it now would lose them. Tick \"Also delete its database, uploaded files and stored secrets\" or move uploads to Spaces first.");
         }
 
-        return $this->queue($this->operations->create($site->organization_id, 'app_delete',
+        return $this->queueIf($dispatch, $this->operations->create($site->organization_id, 'app_delete',
             "Delete {$site->name}".($deleteData ? ' and its data' : ''), $trigger, $actor,
             ['remove', 'data', 'forget'], $site->id, $site->node_id, meta: ['delete_data' => $deleteData]));
     }
@@ -759,6 +794,42 @@ final class OperationRunner
     }
 
     /**
+     * Deletes a server and everything under it, as the person decided after seeing Underneath::of().
+     *
+     * @param  array<string, string>  $choices  item key => one of that item's choices
+     */
+    public function queueServerDelete(string $nodeId, array $choices, string $trigger, string $actor, bool $dispatch = true): int
+    {
+        $node = $this->node($nodeId);
+        $slug = strstr($nodeId, '.', true) ?: $nodeId;
+        $under = \App\Lib\Servers\Underneath::of($nodeId);
+        if ($under['blockers'] !== []) {
+            throw new \InvalidArgumentException(implode(' ', $under['blockers']));
+        }
+        self::assertChosen($under['items'], $choices);
+
+        return $this->queueIf($dispatch, $this->operations->create($node->organization_id, 'server_delete',
+            "Delete {$slug} and everything under it", $trigger, $actor, ['apps', 'retained', 'databases', 'server'],
+            nodeId: $nodeId, meta: ['slug' => $slug, 'choices' => $choices]));
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $items
+     * @param  array<string, string>  $choices
+     */
+    private static function assertChosen(array $items, array $choices): void
+    {
+        foreach ($items as $item) {
+            if ($item['choices'] === []) {
+                continue;
+            }
+            if (! in_array($choices[$item['key']] ?? null, array_column($item['choices'], 'value'), true)) {
+                throw new \InvalidArgumentException("Choose what happens to {$item['name']}.");
+            }
+        }
+    }
+
+    /**
      * Destroys a Droplet the platform made after it was disconnected, so a
      * server that is no longer enrolled can still have its billing stopped.
      */
@@ -791,21 +862,21 @@ final class OperationRunner
     }
 
     /** Permanently deletes an archived application's files, database and secrets. */
-    public function queueArchiveDestroy(int $archiveId, string $trigger, string $actor): int
+    public function queueArchiveDestroy(int $archiveId, string $trigger, string $actor, bool $dispatch = true): int
     {
         $archive = DB::table('site_archives')->where('id', $archiveId)->first()
             ?? throw new \InvalidArgumentException('No such retained data.');
 
-        return $this->queue($this->operations->create($archive->organization_id, 'archive_destroy',
+        return $this->queueIf($dispatch, $this->operations->create($archive->organization_id, 'archive_destroy',
             "Delete retained data for {$archive->name}", $trigger, $actor, ['files', 'database', 'secrets'], meta: ['archive' => $archiveId]));
     }
 
     /** Copies the site's database to the backup bucket. */
-    public function queueSiteBackup(int $siteId, string $kind, string $trigger, string $actor): int
+    public function queueSiteBackup(int $siteId, string $kind, string $trigger, string $actor, bool $dispatch = true): int
     {
         $site = $this->site($siteId);
 
-        return $this->queue($this->operations->create($site->organization_id, 'site_backup', "Back up {$site->name}'s database", $trigger, $actor,
+        return $this->queueIf($dispatch, $this->operations->create($site->organization_id, 'site_backup', "Back up {$site->name}'s database", $trigger, $actor,
             ['backup'], $site->id, $site->node_id, meta: ['kind' => $kind]));
     }
 
@@ -840,21 +911,33 @@ final class OperationRunner
             meta: ['backup' => $backupCreatedAt, 'slug' => "pitr-{$site->id}-".gmdate('YmdHis')]));
     }
 
-    public function queueDatabaseDestroy(int $clusterResourceId, string $trigger, string $actor): int
+    public function queueDatabaseDestroy(int $clusterResourceId, string $trigger, string $actor, bool $dispatch = true): int
     {
         $cluster = DB::table('resources')->where('id', $clusterResourceId)->first() ?? throw new RuntimeException('No such cluster.');
 
-        return $this->queue($this->operations->create($cluster->organization_id, 'database_destroy', "Destroy database cluster {$cluster->slug}", $trigger, $actor,
+        return $this->queueIf($dispatch, $this->operations->create($cluster->organization_id, 'database_destroy', "Destroy database cluster {$cluster->slug}", $trigger, $actor,
             ['destroy'], meta: ['cluster' => $clusterResourceId]));
     }
 
+    /** A new certificate for a self-run database server; $address is for a server of your own whose address changed. */
+    public function queueDatabaseReissue(int $clusterResourceId, ?string $address, string $trigger, string $actor): int
+    {
+        $cluster = DB::table('resources')->where('id', $clusterResourceId)->first() ?? throw new RuntimeException('No such cluster.');
+        \App\Lib\Servers\ServerArchiving::refuseIfClusterArchived($clusterResourceId);
+
+        return $this->queue($this->operations->create($cluster->organization_id, 'database_reissue', "New certificate for database cluster {$cluster->slug}", $trigger, $actor,
+            ['reissue'], meta: ['cluster' => $clusterResourceId, 'address' => $address]));
+    }
+
     /** Follows a server someone else installs, from the command to the stack. */
-    public function queueAdopt(string $organizationId, string $nodeId, int $installId, string $trigger, string $actor): int
+    /** @param  array<string, mixed>  $meta  `database` makes the server a database server instead of a web server */
+    public function queueAdopt(string $organizationId, string $nodeId, int $installId, string $trigger, string $actor, array $meta = []): int
     {
         $name = strstr($nodeId, '.', true) ?: $nodeId;
+        $database = isset($meta['database']);
 
-        return $this->queue($this->operations->create($organizationId, 'adopt', "Add your own server {$name}", $trigger, $actor,
-            ['install', 'enroll', 'stack'], nodeId: $nodeId, meta: ['install_id' => $installId]));
+        return $this->queue($this->operations->create($organizationId, 'adopt', $database ? "Set up your server as database {$meta['database']['cluster']}" : "Add your own server {$name}", $trigger, $actor,
+            ['install', 'enroll', $database ? 'setup' : 'stack'], nodeId: $nodeId, meta: ['install_id' => $installId] + $meta));
     }
 
     /** Logs in over SSH once, checks the machine, installs the agent, then follows it to the stack. The login is never stored. */
@@ -1000,10 +1083,12 @@ final class OperationRunner
                 'container_cleanup' => $this->containerCleanup($operation, $stage, $log),
                 'database_clone' => $this->databaseClone($operation, $stage, $log),
                 'database_destroy' => $this->databaseDestroy($operation, $stage, $log),
+                'database_reissue' => $this->databaseReissue($operation, $stage, $log),
                 'server_add' => $this->serverAdd($operation, $stage, $log),
                 'server_remove' => $this->serverRemove($operation, $stage, $log),
                 'load_balancer' => $this->loadBalancer($operation, $stage, $log),
                 'storage_attach' => $this->storageAttach($operation, $stage, $log),
+                'storage_detach' => $this->storageDetach($operation, $stage, $log),
                 'scaler_up' => $this->scalerUp($operation, $stage, $log),
                 'scaler_down' => $this->scalerDown($operation, $stage, $log),
                 'pool_create' => $this->poolCreate($operation, $stage, $log),
@@ -1021,6 +1106,7 @@ final class OperationRunner
                 'app_create' => $this->appCreate($operation, $stage, $log),
                 'app_delete' => $this->appDelete($operation, $stage, $log),
                 'server_destroy' => $this->serverDestroy($operation, $stage, $log),
+                'server_delete' => $this->serverDelete($operation, $stage, $log, $echo),
                 'archive_destroy' => $this->archiveDestroy($operation, $stage, $log),
                 'install_php' => $this->installPhp($operation, $stage, $log),
                 'php_settings' => $this->phpSettings($operation, $stage, $log),
@@ -1356,7 +1442,14 @@ final class OperationRunner
                 $log('database', $line);
             }
             if ($site->bucket_id !== null) {
-                $log('bucket', 'the Spaces bucket and its key are kept; delete them from Storage when the uploads are no longer needed');
+                try {
+                    foreach (app(\App\Lib\Cloud\Spaces::class)->remove($site) as $line) {
+                        $log('bucket', $line);
+                    }
+                } catch (Throwable $e) {
+                    // The application is going either way; say what is left to delete, and where.
+                    $log('bucket', "the Spaces bucket could not be deleted ({$e->getMessage()}); it keeps billing until you delete it under Spaces at DigitalOcean");
+                }
             }
         } else {
             $log('data', 'kept at '.Sites::root($site).' on '.count($nodes).' server'.(count($nodes) === 1 ? '' : 's')
@@ -1369,7 +1462,7 @@ final class OperationRunner
             $log('record', 'application deleted; its code, data and secrets are gone');
         } else {
             $this->sites->archive($site, $nodes);
-            $log('record', 'application archived; its files, data and secrets are kept');
+            $log('record', 'application deleted; its files, data and secrets are kept on the server as retained data');
         }
 
         return [];
@@ -1439,6 +1532,108 @@ final class OperationRunner
             } catch (Throwable $e) {
                 $log('server', 'destroyed; the certificate revocation will apply at the next gateway sync: '.$e->getMessage());
             }
+        }
+
+        return [];
+    }
+
+    /**
+     * Runs a server deletion: applications (and their previews), retained data, the database server, then the machine.
+     * Each step is an operation of its own, run here in order; the first failure stops it with the record failed and
+     * retryable. Retrying works from the list as it is now, so what is already gone is not done twice.
+     *
+     * @return array<string, mixed>
+     */
+    private function serverDelete(object $operation, Closure $stage, Closure $log, Closure $echo): array
+    {
+        $id = (int) $operation->id;
+        $nodeId = (string) $operation->node_id;
+        $actor = (string) $operation->actor;
+        $choices = (json_decode((string) $operation->meta, true) ?: [])['choices'] ?? [];
+        $slug = strstr($nodeId, '.', true) ?: $nodeId;
+
+        if (! DB::table('nodes')->where('node_id', $nodeId)->exists()) {
+            $log('server', "{$slug} is already removed");
+
+            return [];
+        }
+        $under = \App\Lib\Servers\Underneath::of($nodeId, $id);
+        if ($under['blockers'] !== []) {
+            throw new RuntimeException(implode(' ', $under['blockers']));
+        }
+        try {
+            self::assertChosen($under['items'], $choices);
+        } catch (\InvalidArgumentException $e) {
+            throw new RuntimeException($e->getMessage().' It appeared after you chose; review the list and delete again.');
+        }
+        // The end of an archived server's life: it is brought back under management (a record only) so its children can run.
+        if (\App\Lib\Servers\ServerArchiving::isNodeArchived($nodeId)) {
+            app(\App\Lib\Servers\ServerArchiving::class)->restoreServer((string) $operation->organization_id, $nodeId, \App\Lib\Audit\Actor::system($actor));
+            $log('server', "{$slug} was archived: brought back under management so it can be deleted");
+        }
+        $run = function (int $child, string $what) use ($log, $echo): void {
+            $status = $this->run($child, $echo);
+            if ($status !== 'succeeded') {
+                $why = (string) DB::table('operations')->where('id', $child)->value('error');
+                throw new RuntimeException("{$what} did not finish ({$status}): {$why} Nothing after it was started. Fix that and retry.");
+            }
+            $log('step', "{$what}: done (operation #{$child})");
+        };
+
+        $stage('apps');
+        foreach ($under['items'] as $item) {
+            if (! in_array($item['type'], ['application', 'archived_application'], true)) {
+                continue;
+            }
+            $siteId = (int) substr($item['key'], 4);
+            $choice = $choices[$item['key']];
+            $site = $this->site($siteId);
+            if ($site->archived_at !== null) {
+                app(\App\Lib\Sites\Archiving::class)->restore($site->organization_id, $siteId, \App\Lib\Audit\Actor::system($actor), checkHost: false);
+                $log('app', "{$site->name}: brought back under management so it can be deleted");
+            }
+            if ($choice === 'detach') {
+                $run($this->queueServerRemove($siteId, $nodeId, 'server_delete', $actor, dispatch: false), "Removing {$site->name} from {$slug}");
+
+                continue;
+            }
+            foreach (DB::table('sites')->where('parent_site_id', $siteId)->get(['id', 'name']) as $preview) {
+                $run($this->queuePreviewDestroy((int) $preview->id, 'server_delete', $actor, false), "Deleting preview {$preview->name}");
+            }
+            if ($choice === 'backup') {
+                $run($this->queueSiteBackup($siteId, 'manual', 'server_delete', $actor, false), "Backing up {$site->name}'s database");
+            }
+            $run($this->queueAppDelete($siteId, true, 'server_delete', $actor, false), "Deleting {$site->name} and erasing its data");
+        }
+
+        $stage('retained');
+        foreach ($under['items'] as $item) {
+            if ($item['type'] === 'retained_data') {
+                $run($this->queueArchiveDestroy((int) substr($item['key'], 8), 'server_delete', $actor, false), "Erasing retained data for {$item['name']}");
+            }
+        }
+
+        $stage('databases');
+        foreach ($under['items'] as $item) {
+            if ($item['type'] === 'database_server') {
+                $run($this->queueDatabaseDestroy((int) substr($item['key'], 8), 'server_delete', $actor, false), "Deleting database server {$item['name']}");
+            }
+        }
+
+        $stage('server');
+        $node = DB::table('nodes')->where('node_id', $nodeId)->first();
+        $resource = DB::table('resources')->where('organization_id', $operation->organization_id)->where('type', 'server')->where('slug', $slug)->first();
+        $removal = app(\App\Lib\Servers\NodeRemoval::class);
+        if ($node === null) {
+            $log('server', "{$slug} was removed with its database server");
+        } elseif ($resource !== null && $resource->state === 'deleted') {
+            $removal->removeStale($nodeId, $actor);
+            $log('server', "{$slug} was already gone at the provider; its record is removed");
+        } elseif ($resource !== null && $resource->external_id !== null) {
+            $this->serverDestroy($operation, $stage, $log);
+        } else {
+            $result = $removal->remove($nodeId, $actor);
+            $log('server', "{$slug} disconnected: certificate revoked".($result['uninstalled'] ? ', agent uninstalled' : '').'. The machine keeps running and billing where it is hosted.');
         }
 
         return [];
@@ -1829,8 +2024,10 @@ final class OperationRunner
 
         $stage('install');
         $this->node = $nodeId;
+        $os = ServerStack::osOf($nodeId);
+        // Built from source, it takes as long as the compiler does on this server's cores.
         $this->applyRecipe((object) ['organization_id' => $node->organization_id, 'node_id' => $nodeId, 'name' => "php{$version}"],
-            $this->stack->phpInstallRecipe($version, PhpSettings::for($nodeId, $version)), 1800);
+            $this->stack->phpInstallRecipe($version, PhpSettings::for($nodeId, $version), $os), ServerStack::phpFromSource($os, $version) ? 3600 : 1800);
         DB::table('server_php_versions')->updateOrInsert(['node_id' => $nodeId, 'version' => $version],
             ['updated_at' => now(), 'created_at' => now()]);
         $this->node = null;
@@ -1856,14 +2053,18 @@ final class OperationRunner
 
         $stage('update');
         $this->node = $nodeId;
+        $fromSource = ServerStack::phpFromSource(ServerStack::osOf($nodeId), $version);
+        $reload = ['id' => "reload-php{$version}-fpm", 'type' => 'service', 'name' => "php{$version}-fpm", 'state' => 'reloaded'];
+        // A branch built from source is updated by building the latest patch again; a packaged one, by its packages.
+        $steps = [$this->stack->aptHealthStep(), ...($fromSource ? [...$this->stack->phpBuildSteps($version), $reload] : [
+            ['id' => 'apt-update', 'type' => 'command', 'name' => 'sh', 'args' => ['-c', 'apt-get update -q'], 'description' => 'package lists refreshed'],
+            ['id' => 'upgrade', 'type' => 'command', 'name' => 'sh',
+                'args' => ['-c', 'DEBIAN_FRONTEND=noninteractive apt-get install -y --only-upgrade '.implode(' ', ServerStack::phpPackages($version))],
+                'description' => "php{$version} packages upgraded"],
+            $reload,
+        ])];
         $this->applyRecipe((object) ['organization_id' => $node->organization_id, 'node_id' => $nodeId, 'name' => "php{$version}"],
-            ['name' => "php-update-{$version}", 'steps' => [
-                ['id' => 'apt-update', 'type' => 'command', 'name' => 'sh', 'args' => ['-c', 'apt-get update -q'], 'description' => 'package lists refreshed'],
-                ['id' => 'upgrade', 'type' => 'command', 'name' => 'sh',
-                    'args' => ['-c', 'DEBIAN_FRONTEND=noninteractive apt-get install -y --only-upgrade '.implode(' ', ServerStack::phpPackages($version))],
-                    'description' => "php{$version} packages upgraded"],
-                ['id' => "reload-php{$version}-fpm", 'type' => 'service', 'name' => "php{$version}-fpm", 'state' => 'reloaded'],
-            ]], 1800);
+            ['name' => "php-update-{$version}", 'steps' => $steps], $fromSource ? 3600 : 1800);
 
         $stage('workers');
         $affected = DB::table('sites')->where('organization_id', $node->organization_id)->where('php_version', $version)
@@ -1977,8 +2178,13 @@ final class OperationRunner
     {
         $stage($stageName);
         $admin = app(AdminAccess::class)->forStack($operation->organization_id, $operation->node_id);
+        // The release decides which PHP can be had, so it is read first.
+        if (($os = $this->recordOsVersion($operation->organization_id, $operation->node_id)) !== null) {
+            $log('os', "Ubuntu {$os}");
+        }
+        $php = ServerStack::defaultPhpFor($operation->node_id);
         $result = $this->gateway->run($operation->organization_id, $operation->node_id, 'apply_recipe',
-            ['spec' => $this->stack->spec(PhpSettings::for($operation->node_id, ServerStack::PHP_VERSION), $admin)], timeoutSeconds: 900, waitSeconds: 930, reason: $operation->title);
+            ['spec' => $this->stack->spec(PhpSettings::for($operation->node_id, $php), $admin, $os)], timeoutSeconds: 900, waitSeconds: 930, reason: $operation->title);
         foreach ($result['detail']['run']['steps'] ?? [] as $step) {
             $log((string) $step['action'], (string) $step['description']);
         }
@@ -1989,6 +2195,26 @@ final class OperationRunner
         $this->recordPhpPatches($operation->organization_id, $operation->node_id);
 
         return [];
+    }
+
+    /**
+     * Reads which Ubuntu release a server runs and keeps it on the node, because it decides which PHP can be had there.
+     * Best effort: a server that does not answer, or runs something the stack is not built for, keeps what was recorded.
+     */
+    private function recordOsVersion(string $organizationId, string $nodeId): ?string
+    {
+        try {
+            $output = (string) ($this->gateway->run($organizationId, $nodeId, 'exec', ['name' => 'sh', 'args' => ['-c', '. /etc/os-release && echo "$ID $VERSION_ID"']],
+                reason: 'Read the Ubuntu release')['detail']['output'] ?? '');
+        } catch (Throwable) {
+            return null;
+        }
+        if (preg_match('/^ubuntu (\d+\.\d+)/m', $output, $m) !== 1 || ! in_array($m[1], ServerStack::SUPPORTED_OS, true)) {
+            return null;
+        }
+        DB::table('nodes')->where('node_id', $nodeId)->update(['os_version' => $m[1]]);
+
+        return $m[1];
     }
 
     /**
@@ -2038,6 +2264,30 @@ final class OperationRunner
     private function adopt(object $operation, Closure $stage, Closure $log): array
     {
         $meta = json_decode((string) $operation->meta, true) ?: [];
+        try {
+            return $this->adoptInstalled($operation, $meta, $stage, $log);
+        } catch (OperationWaiting $waiting) {
+            throw $waiting;
+        } catch (Throwable $e) {
+            // A database that will never be set up says so, instead of staying "creating".
+            if (isset($meta['database'])) {
+                $resources = app(\App\Lib\Resources\ResourceManager::class);
+                $cluster = $resources->find($operation->organization_id, 'database_cluster', (string) $meta['database']['cluster']);
+                if ($cluster !== null && $cluster->state === \App\Lib\Resources\ResourceState::Provisioning) {
+                    $resources->transition($cluster, \App\Lib\Resources\ResourceState::Failed, reason: 'The database server could not be set up', error: $e->getMessage(), actor: \App\Lib\Audit\Actor::system('control-plane'));
+                }
+            }
+
+            throw $e;
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $meta
+     * @return array<string, mixed>
+     */
+    private function adoptInstalled(object $operation, array $meta, Closure $stage, Closure $log): array
+    {
         $install = DB::table('server_installs')->where('id', (int) $meta['install_id'])->first()
             ?? throw new RuntimeException('The install link is gone.');
         $current = $this->operations->currentStage((int) $operation->id);
@@ -2063,8 +2313,27 @@ final class OperationRunner
             }
             $log('agent', "{$operation->node_id} connected");
         }
+        if (isset($meta['database'])) {
+            return $this->databaseOnOwnServer($operation, (string) $meta['database']['cluster'], $stage, $log);
+        }
 
         return $this->installStack($operation, $stage, $log, 'stack');
+    }
+
+    /**
+     * The engine, TLS and firewall on a server the person brought, in place of the web stack. The machine stays theirs: it is
+     * never destroyed here, and one that cannot be set up is left as it is, with the cluster marked failed.
+     *
+     * @return array<string, mixed>
+     */
+    private function databaseOnOwnServer(object $operation, string $slug, Closure $stage, Closure $log): array
+    {
+        $stage('setup');
+        $cluster = app(\App\Lib\Resources\ResourceManager::class)->find($operation->organization_id, 'database_cluster', $slug) ?? throw new RuntimeException('The cluster record is gone.');
+        $cluster = app(\App\Lib\Cloud\DatabaseServers::class)->prepare($cluster, $log);
+        $log('cluster', "online at {$cluster->attributes['host']}:{$cluster->attributes['port']}");
+
+        return [];
     }
 
     /**
@@ -2181,6 +2450,12 @@ final class OperationRunner
         $node = $servers->nodeId($org, $slug);
         $stageNow = $this->operations->currentStage((int) $operation->id);
 
+        // A retry after a failed setup has no running stage, but its server is already made: carry on from there.
+        $existing = $resources->find($org, 'server', \App\Lib\Cloud\DatabaseServers::serverSlug($slug));
+        if ($stageNow === null && $existing !== null && $existing->state !== \App\Lib\Resources\ResourceState::Deleted) {
+            $stage('enroll');
+            $stageNow = 'enroll';
+        }
         if (in_array($stageNow, [null, 'create'], true)) {
             $stage('create');
             $record = $servers->create($org, $slug, (string) $meta['engine'], (string) $meta['provider'], (string) $meta['region'], (string) $meta['size']);
@@ -2524,6 +2799,14 @@ final class OperationRunner
         $log('server', 'nginx, workers and schedule stopped there; its copy of the site deleted');
         foreach (app(\App\Lib\Cloud\DatabaseClusters::class)->releaseServer($site, $node) as $line) {
             $log('firewall', $line);
+        }
+        if (($meta['destroy'] ?? false) === true) {
+            // Its own operation, with its own checks: it is refused, and the server kept, if anything else still uses it.
+            try {
+                $log('server', "destroying {$node}: operation #".$this->queueServerDestroy($node, 'server_remove', (string) $operation->actor));
+            } catch (\InvalidArgumentException $e) {
+                $log('server', "kept, not destroyed: {$e->getMessage()}");
+            }
         }
 
         return [];
@@ -2886,13 +3169,41 @@ final class OperationRunner
     }
 
     /** @return array<string, mixed> */
+    private function storageDetach(object $operation, Closure $stage, Closure $log): array
+    {
+        $stage('bucket');
+        foreach (app(\App\Lib\Cloud\Spaces::class)->remove($this->site((int) $operation->site_id)) as $line) {
+            $log('spaces', $line);
+        }
+
+        return [];
+    }
+
+    /** @return array<string, mixed> */
     private function databaseDestroy(object $operation, Closure $stage, Closure $log): array
     {
         $stage('destroy');
         $meta = json_decode((string) $operation->meta, true) ?: [];
         $cluster = app(\App\Lib\Resources\ResourceManager::class)->findById((int) $meta['cluster']) ?? throw new RuntimeException('The cluster is gone.');
+        $adopted = \App\Lib\Cloud\DatabaseClusters::isAdopted($cluster);
+        $own = \App\Lib\Cloud\DatabaseServers::isOwnServer($cluster);
         app(\App\Lib\Cloud\DatabaseClusters::class)->destroy($cluster);
-        $log('cluster', "{$cluster->slug} destroyed; its data is gone");
+        $log('cluster', match (true) {
+            $own => "{$cluster->slug} removed; your server and the database on it are untouched, only Unharbored's agent is gone",
+            $adopted => "{$cluster->slug} forgotten; the cluster and its data are untouched at DigitalOcean",
+            default => "{$cluster->slug} destroyed; its data is gone",
+        });
+
+        return [];
+    }
+
+    /** @return array<string, mixed> */
+    private function databaseReissue(object $operation, Closure $stage, Closure $log): array
+    {
+        $stage('reissue');
+        $meta = json_decode((string) $operation->meta, true) ?: [];
+        $cluster = app(\App\Lib\Resources\ResourceManager::class)->findById((int) $meta['cluster']) ?? throw new RuntimeException('The cluster is gone.');
+        app(\App\Lib\Cloud\DatabaseServers::class)->reissue($cluster, $meta['address'] ?: null, $log);
 
         return [];
     }

@@ -17,7 +17,7 @@ return Application::configure(basePath: dirname(__DIR__))
         ['middleware' => ['web']],
     )
     ->withMiddleware(function (Middleware $middleware): void {
-        $middleware->alias(['member' => \App\Http\Middleware\EnsureMember::class]);
+        $middleware->alias(['member' => \App\Http\Middleware\EnsureMember::class, 'site-active' => \App\Http\Middleware\EnsureSiteActive::class]);
         $middleware->web(append: [\App\Http\Middleware\HandleInertiaRequests::class]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
@@ -28,6 +28,12 @@ return Application::configure(basePath: dirname(__DIR__))
             if ($e->getPrevious() instanceof \Illuminate\Auth\Access\AuthorizationException && ! $request->expectsJson()) {
                 return \Inertia\Inertia::render('Errors/Forbidden', ['host' => $request->getHost()])->toResponse($request)->setStatusCode(403);
             }
+        });
+        // An archived application refuses every change: a message on the page, or a 409 for JSON and the API.
+        $exceptions->render(function (\App\Lib\Sites\SiteArchived $e, Request $request) {
+            return $request->expectsJson() || $request->is('api/*')
+                ? response()->json(['error' => $e->getMessage()], 409)
+                : back()->withErrors(['archived' => $e->getMessage()]);
         });
         // A refused page is a page, not Laravel's bare error screen (which Inertia would show in a modal).
         $exceptions->respond(function (\Symfony\Component\HttpFoundation\Response $response, \Throwable $e, Request $request) {

@@ -17,6 +17,32 @@ class LogsViewTest extends TestCase
         DB::table('log_lines')->insert(['organization_id' => 'org-1', 'node_id' => 'web-1.org-1', 'source' => 'laravel:shop', 'text' => $text, 'logged_at' => now()]);
     }
 
+    public function test_the_list_is_capped_newest_first_and_the_limit_grows_to_a_ceiling_with_filters_kept(): void
+    {
+        $rows = [];
+        for ($i = 1; $i <= 1100; $i++) {
+            $rows[] = ['organization_id' => 'org-1', 'node_id' => 'web-1.org-1', 'source' => 'laravel:shop', 'text' => ($i % 2 ? 'odd ' : 'even ').$i, 'logged_at' => now()->subSeconds(1101 - $i)];
+        }
+        foreach (array_chunk($rows, 200) as $chunk) {
+            DB::table('log_lines')->insert($chunk);
+        }
+        $this->actingAs(User::factory()->create());
+        $lines = fn (string $url) => $this->get($url)->assertOk()->inertiaProps('lines');
+
+        $default = $lines('/logs');
+        $this->assertCount(200, $default['rows']);
+        $this->assertSame(1100, $default['total']);
+        $this->assertSame('even 1100', $default['rows'][0]['text'], 'Newest first.');
+
+        $this->assertCount(400, $lines('/logs?limit=400')['rows']);
+        $this->assertCount(1000, $lines('/logs?limit=999999')['rows'], 'The ceiling is 1000.');
+        $this->assertCount(50, $lines('/logs?limit=1')['rows'], 'The floor is 50.');
+
+        $odd = $lines('/logs?q=odd&limit=100');
+        $this->assertCount(100, $odd['rows']);
+        $this->assertSame(550, $odd['total']);
+    }
+
     public function test_a_stack_trace_folds_and_the_level_filter_narrows(): void
     {
         $this->line("production.ERROR: Boom\n#0 /app/Foo.php(1): bar()\n#1 {main}");

@@ -79,6 +79,19 @@ final class OperationsTest extends TestCase
         $this->assertSame(['setup' => 'done', 'build' => 'failed', 'activate' => 'waiting'], array_column(json_decode($op->stages, true), 'status', 'name'));
     }
 
+    public function test_a_long_error_keeps_its_beginning_and_most_of_its_end(): void
+    {
+        $id = $this->ops()->create('org-1', 'deploy', 'Deploy demo', 'console', 'me', ['build']);
+        $this->ops()->stage($id, 'build');
+
+        $this->ops()->fail($id, 'Deploy failed: composer exited 100'.str_repeat("\n  - Downloading a/b (1.0.0)", 400)."\nThe nova URL required authentication (HTTP 401)");
+
+        $error = $this->ops()->find($id)->error;
+        $this->assertLessThanOrEqual(2000, mb_strlen($error));
+        $this->assertStringStartsWith('Deploy failed: composer exited 100', $error);
+        $this->assertStringEndsWith('required authentication (HTTP 401)', $error);
+    }
+
     public function test_log_lines_carry_the_running_stage(): void
     {
         $id = $this->ops()->create('org-1', 'deploy', 'Deploy demo', 'console', 'me', ['fetch']);
@@ -112,6 +125,7 @@ final class OperationsTest extends TestCase
             ->push($step('noop', 'directory /home/deploy/demo'))       // setup
             ->push($step('run', 'clone demo'))                         // fetch
             ->push(['status' => 'succeeded', 'outcome_known' => true]) // prepare
+            ->push(['status' => 'succeeded', 'outcome_known' => true]) // which PHP the packages need
             ->push($step('run', 'composer install'))                   // build
             ->push(['status' => 'succeeded', 'outcome_known' => true, 'detail' => ['output' => "abc1234\n"]])
             ->push(['status' => 'succeeded', 'outcome_known' => true]) // activate

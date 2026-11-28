@@ -23,7 +23,7 @@ final class SyncBalancerCertificates extends Command
     public function handle(LoadBalancers $balancers): int
     {
         $failed = false;
-        foreach (DB::table('sites')->whereNotNull('load_balancer_id')->where('tls', true)->get() as $site) {
+        foreach (DB::table('sites')->whereNull('archived_at')->whereNotNull('load_balancer_id')->where('tls', true)->get() as $site) {
             try {
                 $this->line("{$site->name}: ".$balancers->syncCertificate($site));
             } catch (Throwable $e) {

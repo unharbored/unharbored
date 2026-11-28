@@ -35,6 +35,7 @@ final class SiteServersController extends SiteSettingsBase
             // SQLite lives on one server; migrations run on the primary only.
             throw ValidationException::withMessages(['server' => 'Attach a managed database first: SQLite cannot be shared between servers, so a second server could not run the same application.']);
         }
+        $this->requireSharedState($row);
         $ok = DB::table('nodes')->where('node_id', $node)->where('organization_id', $row->organization_id)->exists();
         if (! $ok || in_array($node, Sites::nodes($row), true)) {
             throw ValidationException::withMessages(['server' => 'Pick a server this site is not on yet.']);
@@ -62,6 +63,7 @@ final class SiteServersController extends SiteSettingsBase
         if ($row->database_cluster_id === null) {
             throw ValidationException::withMessages(['server' => 'Attach a managed database first: SQLite cannot be shared between servers, so a second server could not run the same application.']);
         }
+        $this->requireSharedState($row);
         $choice = SettingsPage::newServerChoices($row) ?? throw ValidationException::withMessages(['server' => 'A server cannot be made at this application\'s provider from here. Connect it, or add a server you already have.']);
         $region = (string) $request->input('region', '');
         $size = (string) $request->input('size', '');
@@ -79,6 +81,14 @@ final class SiteServersController extends SiteSettingsBase
         return $this->toOperation(app(OperationRunner::class)->queueSiteServerCreate($row->id, $server, $role, $this->email()));
     }
 
+    /** A cache, sessions or queue kept on one server's disk cannot be seen from another: the same check the autoscaler makes. */
+    private function requireSharedState(\stdClass $row): void
+    {
+        if (($why = app(ServerScaler::class)->problem($row)) !== null) {
+            throw ValidationException::withMessages(['server' => $why]);
+        }
+    }
+
     public function remove(Request $request, int $site): Response
     {
         Gate::authorize('infrastructure');
@@ -91,7 +101,12 @@ final class SiteServersController extends SiteSettingsBase
             throw ValidationException::withMessages(['server' => 'The autoscale pool owns that server. Lower its limits instead.']);
         }
 
-        return $this->toOperation(app(OperationRunner::class)->queueServerRemove($row->id, $node, 'console', $this->email()));
+        $destroy = $request->boolean('destroy');
+        if ($destroy && ! SettingsPage::destroyable($row->organization_id, $node)) {
+            throw ValidationException::withMessages(['server' => 'That server was not made by Unharbored, so it is only removed from the application, never destroyed.']);
+        }
+
+        return $this->toOperation(app(OperationRunner::class)->queueServerRemove($row->id, $node, 'console', $this->email(), $destroy));
     }
 
     public function balancer(int $site): Response

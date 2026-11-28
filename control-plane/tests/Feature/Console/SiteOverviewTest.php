@@ -39,6 +39,24 @@ final class SiteOverviewTest extends TestCase
         }
     }
 
+    public function test_a_site_with_mysql_on_its_server_says_mysql_not_sqlite(): void
+    {
+        config(['vault.master_key' => LocalKeyManager::generateMasterKey(), 'control_plane.gateway_url' => 'http://gw.invalid']);
+        $this->app->forgetInstance(KeyManager::class);
+        $this->app->forgetInstance(Vault::class);
+        $this->actingAs(User::forceCreate(['name' => 'Matt', 'email' => 'matt@example.com', 'password' => 'correct horse battery']));
+        $sites = new Sites($this->app->make(Vault::class), new AuditLog());
+        $site = $sites->create('org-1', 'web-1.org-1', 'shop', 'shop.example.com', 'git@github.com:acme/shop.git');
+
+        $engine = fn () => json_encode($this->get('/site?site='.$site->id)->assertOk()->inertiaProps('view.topology')['Data'][0]['rows'][0]);
+
+        $this->assertStringContainsString('SQLite', $engine());
+
+        $sites->setInjected(DB::table('sites')->where('id', $site->id)->first(), ['DB_CONNECTION' => 'mysql'], 'MySQL on the server');
+
+        $this->assertStringContainsString('MySQL', $engine());
+    }
+
     public function test_a_static_site_shows_only_its_network_and_servers(): void
     {
         config(['vault.master_key' => LocalKeyManager::generateMasterKey(), 'control_plane.gateway_url' => 'http://gw.invalid']);

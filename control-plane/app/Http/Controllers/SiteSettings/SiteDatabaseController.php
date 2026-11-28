@@ -6,10 +6,12 @@ namespace App\Http\Controllers\SiteSettings;
 
 use App\Lib\Audit\AuditLog;
 use App\Lib\Cloud\DatabaseClusters;
+use App\Lib\Cloud\Spaces;
 use App\Lib\Operations\OperationRunner;
 use App\Lib\Servers\LocalServices;
 use App\Lib\Sites\CloneConversion;
 use App\Lib\Sites\DatabaseClones;
+use App\Lib\Sites\Runtimes;
 use App\Lib\Sites\SiteBackups;
 use App\Lib\Sites\Sites;
 use Illuminate\Http\JsonResponse;
@@ -24,7 +26,7 @@ use Symfony\Component\HttpFoundation\Response;
 final class SiteDatabaseController extends SiteSettingsBase
 {
     /**
-     * The site's database as one connection URL, to paste into a client.
+     * The site's database as one connection URL and as its parts (host, port, database, user, password), to paste into a client.
      * Carries the password, so it needs the right to see secrets and is audited.
      */
     public function connection(Request $request, int $site): JsonResponse
@@ -44,12 +46,12 @@ final class SiteDatabaseController extends SiteSettingsBase
             app(AuditLog::class)->record($row->organization_id, $this->actor(),
                 'site.database_connection_read', resourceType: 'site', resourceId: "{$row->node_id}/{$row->name}");
         }
-        $url = Sites::connectionUrl($values);
-        if ($url === null) {
+        $details = Sites::connectionDetails($values);
+        if ($details === null) {
             throw ValidationException::withMessages(['database' => 'This database has no network address to connect to (SQLite is a file on the server).']);
         }
 
-        return response()->json(['url' => $url]);
+        return response()->json(['url' => $details['url'], 'details' => $details]);
     }
 
     public function attach(Request $request, int $site): Response
@@ -75,7 +77,7 @@ final class SiteDatabaseController extends SiteSettingsBase
         if ((LocalServices::SERVICES[$service]['kind'] ?? null) !== 'database') {
             throw ValidationException::withMessages(['local' => 'Choose MySQL or PostgreSQL.']);
         }
-        if (($row->compute ?? 'single') !== 'single' || \App\Lib\Sites\Runtimes::isContainer($row)) {
+        if (($row->compute ?? 'single') !== 'single' || Runtimes::isContainer($row)) {
             throw ValidationException::withMessages(['local' => 'A database on the server is for an application on one server. Several servers need a cluster.']);
         }
 
@@ -104,6 +106,35 @@ final class SiteDatabaseController extends SiteSettingsBase
         }
 
         return $this->toOperation(app(OperationRunner::class)->queueStorageAttach($row->id, 'console', $this->email()));
+    }
+
+    public function removeStorage(int $site): Response
+    {
+        Gate::authorize('infrastructure');
+        $row = $this->row($site);
+        if ($row->bucket_id === null) {
+            throw ValidationException::withMessages(['storage' => 'This site has no bucket.']);
+        }
+
+        return $this->toOperation(app(OperationRunner::class)->queueStorageDetach($row->id, 'console', $this->email()));
+    }
+
+    /** Uses a bucket that already exists, at any S3-compatible service. Tried with a read-only request; nothing is created. */
+    public function existingStorage(Request $request, int $site): RedirectResponse
+    {
+        Gate::authorize('infrastructure');
+        $data = $request->validate([
+            'endpoint' => 'required|string|max:200', 'bucket' => 'required|string|max:63', 'access_key' => 'required|string|max:200',
+            'secret_key' => 'required|string|max:400', 'region' => 'nullable|string|max:30', 'url' => 'nullable|string|max:200',
+        ]);
+        try {
+            app(Spaces::class)->useExisting($this->row($site), $data['endpoint'], $data['bucket'], $data['access_key'], $data['secret_key'],
+                ($data['region'] ?? '') ?: 'us-east-1', $data['url'] ?? null);
+        } catch (\InvalidArgumentException $e) {
+            throw ValidationException::withMessages(['storage' => $e->getMessage()]);
+        }
+
+        return $this->saved("Uploads use {$data['bucket']}. Nothing was changed there. Deploy to switch; files already uploaded are not copied.");
     }
 
     /** Switches the automatic backups on or off. */

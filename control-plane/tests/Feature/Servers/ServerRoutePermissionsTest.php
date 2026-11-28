@@ -31,7 +31,7 @@ final class ServerRoutePermissionsTest extends TestCase
     private const INFRASTRUCTURE = [
         '/servers', '/servers/own',
         '/servers/droplets/1/destroy', '/servers/archives/1/delete',
-        '/servers/x.org-1/disconnect', '/servers/x.org-1/remove-stale', '/servers/x.org-1/destroy', '/servers/x.org-1/repair', '/servers/x.org-1/upgrade-agent',
+        '/servers/x.org-1/disconnect', '/servers/x.org-1/remove-stale', '/servers/x.org-1/destroy', '/servers/x.org-1/delete', '/servers/x.org-1/repair', '/servers/x.org-1/upgrade-agent',
         '/servers/x.org-1/sudo/rotate', '/servers/x.org-1/harden', '/servers/x.org-1/firewall', '/servers/x.org-1/tailscale/join', '/servers/x.org-1/tailscale/leave', '/servers/x.org-1/keys/1',
         '/servers/x.org-1/php/8.4/settings', '/servers/x.org-1/php/8.4/install', '/servers/x.org-1/php/8.4/update', '/servers/x.org-1/services/pgsql',
         '/server/containers/prepare', '/server/containers/cleanup',

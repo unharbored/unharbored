@@ -4,12 +4,16 @@ declare(strict_types=1);
 
 namespace Tests\Feature\Providers;
 
+use App\Lib\Agent\AgentRelease;
+use App\Lib\Cloud\CloudInit;
+use App\Lib\Gateway\GatewayClient;
 use App\Lib\Operations\OperationRunner;
 use App\Lib\Providers\Custom\RemoteShell;
 use App\Lib\Providers\Custom\SshAdoption;
 use App\Lib\Vault\KeyManager;
 use App\Lib\Vault\LocalKeyManager;
 use App\Lib\Vault\Vault;
+use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Support\Facades\DB;
@@ -108,10 +112,10 @@ final class SshAdoptionTest extends TestCase
             'control_plane.agent_directory' => $this->dir, 'control_plane.public_url' => 'https://agent.example.com',
             'control_plane.server_name' => 'agent.example.com', 'control_plane.gateway_token' => 't', 'control_plane.gateway_url' => 'http://gw.test',
         ]);
-        $this->http = new HttpFactory();
+        $this->http = new HttpFactory;
         $this->app->instance(HttpFactory::class, $this->http);
         $this->app->bind(RemoteShell::class, FakeShell::class);
-        foreach ([KeyManager::class, Vault::class, \App\Lib\Agent\AgentRelease::class, \App\Lib\Cloud\CloudInit::class, \App\Lib\Gateway\GatewayClient::class, OperationRunner::class, SshAdoption::class] as $c) {
+        foreach ([KeyManager::class, Vault::class, AgentRelease::class, CloudInit::class, GatewayClient::class, OperationRunner::class, SshAdoption::class] as $c) {
             $this->app->forgetInstance($c);
         }
         DB::table('organizations')->insert(['id' => 'org-1', 'name' => 'Org', 'created_at' => now(), 'updated_at' => now()]);
@@ -175,12 +179,12 @@ final class SshAdoptionTest extends TestCase
         $this->assertSame('SHA256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', $row->fingerprint);
         $log = DB::table('operations')->find($op)->log;
         $this->assertStringContainsString('host key SHA256:', $log);
-        $this->assertStringContainsString('ok    Ubuntu 24.04', $log);
+        $this->assertStringContainsString('ok    Ubuntu 22.04, 24.04 or 26.04', $log);
         $this->assertStringContainsString('the login has been discarded', $log);
         $this->assertStringNotContainsString('PRIVATE KEY', $log);
         $this->assertSame('disconnect', end(FakeShell::$commands));
         $install = collect(FakeShell::$commands)->first(fn ($c) => str_contains($c, 'base64 -d'));
-        $this->assertStringContainsString("bash \"\$f\"", $install);
+        $this->assertStringContainsString('bash "$f"', $install);
         $this->assertStringNotContainsString('sudo', $install, 'root needs no sudo');
     }
 
@@ -272,7 +276,7 @@ final class SshAdoptionTest extends TestCase
 
     public function test_the_form_validates_and_never_flashes_the_secret_back(): void
     {
-        $this->actingAs(\App\Models\User::forceCreate(['name' => 'Matt', 'email' => 'matt@example.com', 'password' => 'correct horse battery']));
+        $this->actingAs(User::forceCreate(['name' => 'Matt', 'email' => 'matt@example.com', 'password' => 'correct horse battery']));
         config(['control_plane.outbound_ip' => '198.51.100.9']);
 
         $this->get('/servers/connect')->assertOk()->assertInertia(fn ($page) => $page->component('Servers/Connect')->where('outboundIp', '198.51.100.9'));

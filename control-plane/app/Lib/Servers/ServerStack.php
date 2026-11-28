@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Lib\Servers;
 
+use Illuminate\Support\Facades\DB;
+
 /**
  * The base software every application server runs: nginx, PHP-FPM,
  * supervisor, git and Composer, plus the unprivileged user that owns the
@@ -31,6 +33,56 @@ final class ServerStack
 
     /** The PHP binary every platform command names explicitly. */
     public const PHP_BINARY = '/usr/bin/php'.self::PHP_VERSION;
+
+    /** The Ubuntu releases the stack is built for. */
+    public const SUPPORTED_OS = ['22.04', '24.04', '26.04'];
+
+    /**
+     * A release the ondrej/php PPA does not serve has one PHP of its own, the branch Ubuntu carries, and that is its default.
+     */
+    public const DISTRO_PHP = ['26.04' => '8.5'];
+
+    /**
+     * Releases whose PHP branches come from Ondřej Surý's own repository (packages.sury.org), because his Launchpad PPA has nothing
+     * for them. Every branch is a package there, so nothing is built. A release in DISTRO_PHP and not here has its other branches
+     * built from source (resources/scripts/build-php.sh), laid out as the packages are.
+     */
+    public const SURY_RELEASES = ['26.04'];
+
+    /** Where the build script is put on a server. */
+    public const PHP_BUILD_SCRIPT = '/usr/local/sbin/cm-build-php';
+
+    /** The Ubuntu release a server runs, as recorded when its stack was installed; null before that, and for every server made before 26.04 was supported. */
+    public static function osOf(?string $nodeId): ?string
+    {
+        return $nodeId === null ? null : (DB::table('nodes')->where('node_id', $nodeId)->value('os_version') ?: null);
+    }
+
+    /** The PHP branch a server's stack installs by default and an application with no choice of its own runs on. */
+    public static function defaultPhpFor(?string $nodeId): string
+    {
+        return self::DISTRO_PHP[self::osOf($nodeId)] ?? self::PHP_VERSION;
+    }
+
+    /** The PHP branches that can be installed on this server, its default first. */
+    public static function phpVersionsFor(?string $nodeId): array
+    {
+        $default = self::defaultPhpFor($nodeId);
+
+        return [$default, ...array_values(array_diff(self::PHP_VERSIONS, [$default]))];
+    }
+
+    /** True when this branch is built from source on a server running that release, not installed from packages. */
+    public static function phpFromSource(?string $os, string $version): bool
+    {
+        return isset(self::DISTRO_PHP[$os]) && ! in_array($os, self::SURY_RELEASES, true) && self::DISTRO_PHP[$os] !== $version;
+    }
+
+    /** Why this branch cannot be installed or configured on the server, or null when it can. */
+    public static function phpRefusal(string $nodeId, string $version): ?string
+    {
+        return self::supportsPhp($version) ? null : "PHP {$version} is not offered.";
+    }
 
     public static function phpBinary(string $version): string
     {
@@ -81,26 +133,51 @@ final class ServerStack
     ];
 
     /**
-     * @param  array<string, mixed>  $phpSettings  the default branch's PhpSettings; the defaults if none are given
-     * @param  array{user: string, hash: string, keys: list<string>}|null  $admin  the login user, its password hash and keys
-     * @return array{name: string, steps: list<array<string, mixed>>}
+     * A server whose running kernel has no modules directory (some providers boot a kernel they do not install modules for) cannot
+     * build an initramfs, so the `dracut` package that apt pulls in fails to configure, and from then on every apt install on the
+     * server ends with an error even though what was asked for is installed. Such a server is told not to regenerate its initramfs,
+     * which leaves the boot image it has as it is, and the half-configured package is finished. A server with modules is untouched.
+     *
+     * @return array<string, mixed>
      */
-    public function spec(array $phpSettings = PhpSettings::DEFAULTS, ?array $admin = null): array
+    public function aptHealthStep(): array
     {
-        $php = self::PHP_VERSION;
-        $user = self::DEPLOY_USER;
+        $conf = '/etc/initramfs-tools/update-initramfs.conf';
 
-        // Packages come from archive.ubuntu.com and from the PHP PPA, and a download that stalls once fails a whole install
-        // (the PPA's mirror did, on a first server). apt tries each one again before giving up.
-        $steps = [['id' => 'apt-retries', 'type' => 'file', 'path' => '/etc/apt/apt.conf.d/80-cm-retries', 'content_b64' => base64_encode("Acquire::Retries \"5\";\n"), 'mode' => '0644']];
+        return [
+            'id' => 'apt-initramfs',
+            'type' => 'command',
+            'name' => 'sh',
+            'args' => ['-c', 'if [ -x /usr/sbin/update-initramfs ] && [ ! -d "/lib/modules/$(uname -r)" ]; then'
+                ." mkdir -p /etc/initramfs-tools && echo update_initramfs=no > {$conf} && DEBIAN_FRONTEND=noninteractive dpkg --configure -a; fi"],
+            'unless' => ['sh', '-c', "[ -f {$conf} ] || [ -d \"/lib/modules/$(uname -r)\" ]"],
+            'description' => 'package installs are not held up by a kernel with no modules',
+        ];
+    }
 
-        foreach (['nginx', 'supervisor', 'cron', 'git', 'unzip', 'acl', 'certbot'] as $package) {
-            $steps[] = ['id' => "pkg-{$package}", 'type' => 'package', 'name' => $package];
+    /**
+     * Where PHP's packages come from: the ondrej/php PPA, or on a release it does not serve, Ondřej Surý's own repository, the same
+     * packages from the same maintainer, with its signing key kept in a keyring of its own and trusted for that repository alone.
+     *
+     * @return array<string, mixed>
+     */
+    private function phpRepositoryStep(?string $os): array
+    {
+        if (in_array($os, self::SURY_RELEASES, true)) {
+            return [
+                'id' => 'php-repository',
+                'type' => 'command',
+                'name' => 'sh',
+                'args' => ['-c', 'curl -fsSL https://packages.sury.org/php/apt.gpg -o /usr/share/keyrings/deb.sury.org-php.gpg'
+                    .' && echo "deb [signed-by=/usr/share/keyrings/deb.sury.org-php.gpg] https://packages.sury.org/php/ $(. /etc/os-release && echo $VERSION_CODENAME) main" > /etc/apt/sources.list.d/php.list'
+                    .' && apt-get update -q'],
+                'unless' => ['test', '-f', '/etc/apt/sources.list.d/php.list'],
+                'description' => 'packages.sury.org PHP repository is configured',
+            ];
         }
 
-        // The PPA's maintainer name is not ASCII, and add-apt-repository fails
-        // decoding it under the C locale an agent runs with.
-        $steps[] = [
+        // The PPA's maintainer name is not ASCII, and add-apt-repository fails decoding it under the C locale an agent runs with.
+        return [
             'id' => 'php-ppa',
             'type' => 'command',
             'name' => 'env',
@@ -108,22 +185,35 @@ final class ServerStack
             'unless' => ['sh', '-c', 'ls /etc/apt/sources.list.d/ | grep -q ondrej-ubuntu-php'],
             'description' => 'ondrej/php PPA is configured',
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $phpSettings  the default branch's PhpSettings; the defaults if none are given
+     * @param  array{user: string, hash: string, keys: list<string>}|null  $admin  the login user, its password hash and keys
+     * @param  string|null  $os  the Ubuntu release it runs on (a release with no PPA takes Ubuntu's own PHP); the usual 24.04 stack if none is given
+     * @return array{name: string, steps: list<array<string, mixed>>}
+     */
+    public function spec(array $phpSettings = PhpSettings::DEFAULTS, ?array $admin = null, ?string $os = null): array
+    {
+        $php = self::DISTRO_PHP[$os] ?? self::PHP_VERSION;
+        $user = self::DEPLOY_USER;
+
+        // Packages come from archive.ubuntu.com and from the PHP PPA, and a download that stalls once fails a whole install
+        // (the PPA's mirror did, on a first server). apt tries each one again before giving up.
+        $steps = [['id' => 'apt-retries', 'type' => 'file', 'path' => '/etc/apt/apt.conf.d/80-cm-retries', 'content_b64' => base64_encode("Acquire::Retries \"5\";\n"), 'mode' => '0644']];
+        $steps[] = $this->aptHealthStep();
+
+        foreach (['nginx', 'supervisor', 'cron', 'git', 'unzip', 'acl', 'certbot'] as $package) {
+            $steps[] = ['id' => "pkg-{$package}", 'type' => 'package', 'name' => $package];
+        }
+
+        $steps[] = $this->phpRepositoryStep($os);
 
         // Database clients for site backups. pg_dump must be at least the
         // server's major version, and DigitalOcean runs a newer PostgreSQL
         // than Ubuntu ships, so the client comes from PostgreSQL's own
         // repository.
-        $steps[] = [
-            'id' => 'pgdg-repo',
-            'type' => 'command',
-            'name' => 'sh',
-            'args' => ['-c', 'install -d /usr/share/postgresql-common/pgdg'
-                .' && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc'
-                .' && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(. /etc/os-release && echo $VERSION_CODENAME)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
-                .' && apt-get update -q'],
-            'unless' => ['test', '-f', '/etc/apt/sources.list.d/pgdg.list'],
-            'description' => 'PostgreSQL apt repository is configured',
-        ];
+        $steps[] = self::pgdgRepositoryStep();
         foreach (['postgresql-client-'.self::PG_CLIENT, 'mysql-client'] as $package) {
             $steps[] = ['id' => "pkg-{$package}", 'type' => 'package', 'name' => $package];
         }
@@ -309,23 +399,21 @@ final class ServerStack
      *
      * @return array{name: string, steps: list<array<string, mixed>>}
      */
-    public function phpInstallRecipe(string $version, array $phpSettings = PhpSettings::DEFAULTS): array
+    public function phpInstallRecipe(string $version, array $phpSettings = PhpSettings::DEFAULTS, ?string $os = null): array
     {
         if (! self::supportsPhp($version)) {
             throw new \InvalidArgumentException("PHP {$version} is not offered.");
         }
 
-        $steps = [[
-            'id' => 'php-ppa',
-            'type' => 'command',
-            'name' => 'env',
-            'args' => ['LC_ALL=C.UTF-8', 'add-apt-repository', '-y', 'ppa:ondrej/php'],
-            'unless' => ['sh', '-c', 'ls /etc/apt/sources.list.d/ | grep -q ondrej-ubuntu-php'],
-            'description' => 'ondrej/php PPA is configured',
-        ]];
-
-        foreach (self::PHP_EXTENSIONS as $ext) {
-            $steps[] = ['id' => "pkg-php-{$ext}", 'type' => 'package', 'name' => "php{$version}-{$ext}"];
+        $steps = [$this->aptHealthStep()];
+        if (self::phpFromSource($os, $version)) {
+            // No packages exist for this release: build it, the way the packages would have laid it out.
+            array_push($steps, ...$this->phpBuildSteps($version));
+        } else {
+            $steps[] = $this->phpRepositoryStep($os);
+            foreach (self::PHP_EXTENSIONS as $ext) {
+                $steps[] = ['id' => "pkg-php-{$ext}", 'type' => 'package', 'name' => "php{$version}-{$ext}"];
+            }
         }
 
         array_push($steps, ...$this->phpSettingsFiles($version, $phpSettings));
@@ -369,6 +457,23 @@ pm.max_spare_servers = {$spare}
 pm.max_requests = 500
 
 CONF;
+    }
+
+    /**
+     * Builds a branch from source with resources/scripts/build-php.sh. The same steps apply a patch update: the script
+     * does nothing when the latest patch is built and rebuilds in place when there is a newer one.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function phpBuildSteps(string $version): array
+    {
+        $script = (string) file_get_contents(resource_path('scripts/build-php.sh'));
+
+        return [
+            ['id' => 'php-build-script', 'type' => 'file', 'path' => self::PHP_BUILD_SCRIPT, 'content_b64' => base64_encode($script), 'mode' => '0755'],
+            ['id' => "php-build-{$version}", 'type' => 'command', 'name' => self::PHP_BUILD_SCRIPT, 'args' => [$version],
+                'description' => "php{$version} built from source (this takes a while)"],
+        ];
     }
 
     /**
@@ -438,5 +543,26 @@ server {
 }
 
 CONF;
+    }
+
+    /**
+     * PostgreSQL's own apt repository, where the current major version lives: Ubuntu ships an older one. Needed by
+     * the stack for pg_dump and by a database server that runs PostgreSQL itself.
+     *
+     * @return array<string, mixed>
+     */
+    public static function pgdgRepositoryStep(): array
+    {
+        return [
+            'id' => 'pgdg-repo',
+            'type' => 'command',
+            'name' => 'sh',
+            'args' => ['-c', 'install -d /usr/share/postgresql-common/pgdg'
+                .' && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc'
+                .' && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(. /etc/os-release && echo $VERSION_CODENAME)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+                .' && apt-get update -q'],
+            'unless' => ['test', '-f', '/etc/apt/sources.list.d/pgdg.list'],
+            'description' => 'PostgreSQL apt repository is configured',
+        ];
     }
 }

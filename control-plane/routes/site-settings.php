@@ -46,6 +46,8 @@ Route::prefix('/site/settings/{site}')->whereNumber('site')->name('site.settings
     Route::post('database/attach', [SiteDatabaseController::class, 'attach'])->name('database.attach');
     Route::post('database/detach', [SiteDatabaseController::class, 'detach'])->name('database.detach');
     Route::post('storage', [SiteDatabaseController::class, 'storage'])->name('storage');
+    Route::post('storage/remove', [SiteDatabaseController::class, 'removeStorage'])->name('storage.remove');
+    Route::post('storage/existing', [SiteDatabaseController::class, 'existingStorage'])->name('storage.existing');
     Route::post('backup/setting', [SiteDatabaseController::class, 'backups'])->name('backup.setting');
     Route::post('backup', [SiteDatabaseController::class, 'backUp'])->name('backup');
     Route::post('backup/restore', [SiteDatabaseController::class, 'restore'])->name('backup.restore');
@@ -95,6 +97,8 @@ Route::prefix('/site/settings/{site}')->whereNumber('site')->name('site.settings
     Route::post('runtime', [SiteBuildController::class, 'runtime'])->name('runtime');
     Route::post('build-script', [SiteBuildController::class, 'buildScript'])->name('build-script');
     Route::post('composer-auth', [SiteBuildController::class, 'composerAuth'])->name('composer-auth');
+    Route::post('composer-host', [SiteBuildController::class, 'composerHost'])->name('composer-host');
+    Route::post('composer-host-remove', [SiteBuildController::class, 'composerHostRemove'])->name('composer-host-remove');
     Route::post('php', [SiteBuildController::class, 'php'])->name('php');
 
     // Repository
@@ -113,4 +117,6 @@ Route::prefix('/site/settings/{site}')->whereNumber('site')->name('site.settings
     Route::post('deploy', [SiteLifecycleController::class, 'deploy'])->name('deploy');
     Route::post('project', [SiteLifecycleController::class, 'moveProject'])->name('project');
     Route::post('delete', [SiteLifecycleController::class, 'delete'])->name('delete');
+    Route::post('archive', [SiteLifecycleController::class, 'archive'])->name('archive');
+    Route::post('restore', [SiteLifecycleController::class, 'restore'])->name('restore');
 });

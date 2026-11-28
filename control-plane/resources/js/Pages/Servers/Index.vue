@@ -24,6 +24,7 @@ const props = defineProps({
     serving: String,
     accountNote: String,
     servers: Array,
+    archived: { type: Array, default: () => [] },
     pools: Array,
     provisioning: Array,
     disconnected: Array,
@@ -37,7 +38,7 @@ const page = usePage();
 const can = computed(() => page.props.can);
 const { errors, clearErrors } = useKeptErrors();
 
-usePolling(['servers', 'pools', 'provisioning', 'disconnected', 'archives', 'gatewayUp'], 5000);
+usePolling(['servers', 'archived', 'pools', 'provisioning', 'disconnected', 'archives', 'gatewayUp'], 5000);
 
 // Pools first, each with its servers (the primary at the top), then the servers on their own. With no pools
 // there are no group rows at all.
@@ -98,8 +99,8 @@ const cell = 'border-t border-line-soft px-4 py-3.5 align-middle';
 
   <Notice v-if="!can.infrastructure" tone="plain">You can look at the servers but not change them: setting up, repairing, locking down or removing a server needs a Manager or an Owner.</Notice>
 
-  <div v-if="servers.length === 0" class="overflow-hidden rounded-panel border border-line bg-panel shadow-panel"><Empty>No servers yet.</Empty></div>
-  <div v-else class="overflow-x-auto rounded-panel border border-line bg-panel shadow-panel">
+  <div v-if="servers.length === 0 && archived.length === 0" class="overflow-hidden rounded-panel border border-line bg-panel shadow-panel"><Empty>No servers yet.</Empty></div>
+  <div v-else-if="servers.length > 0" class="overflow-x-auto rounded-panel border border-line bg-panel shadow-panel">
     <table class="w-full min-w-[820px] border-collapse text-sm" aria-label="Servers">
       <thead><tr><th :class="head">Server</th><th :class="head">Provider · region</th><th :class="head">Size</th><th :class="head">CPU / memory · 1 h</th><th :class="head">Apps</th><th :class="head">Agent</th></tr></thead>
       <template v-for="(g, i) in groups" :key="g.pool?.site.id ?? 'single'">
@@ -146,13 +147,24 @@ const cell = 'border-t border-line-soft px-4 py-3.5 align-middle';
     </table>
   </div>
 
-  <Panel v-if="archives.length > 0" title="Retained application data" note="Deleted applications whose data was kept · blocks their names and their servers">
+  <details v-if="archived.length > 0" class="rounded-lg border border-line bg-surface">
+    <summary class="cursor-pointer px-5 py-3.5 font-mono text-[11px] tracking-[0.12em] text-muted uppercase">Archived · {{ archived.length }}</summary>
+    <p class="m-0 px-5 pb-2 text-[13px] text-muted">Unharbored no longer manages these. They keep running, and keep costing money where they are hosted.</p>
+    <ul class="m-0 list-none p-0">
+      <li v-for="a in archived" :key="a.id" class="flex flex-wrap items-center justify-between gap-3 border-t border-line-soft px-5 py-3">
+        <span><Link class="font-semibold text-ink-strong" :href="`/servers/${encodeURIComponent(a.id)}?tab=settings`">{{ a.name }}</Link> <span class="text-[13px] text-faint">{{ where(a.compute).join(' · ') }}<template v-if="money(a.compute)"> · {{ money(a.compute) }}</template> · archived {{ a.archivedSince }}</span></span>
+        <Btn v-if="can.infrastructure" small @click="router.post(`/servers/${encodeURIComponent(a.id)}/restore`, {}, { preserveScroll: true })">Restore</Btn>
+      </li>
+    </ul>
+  </details>
+
+  <Panel v-if="archives.length > 0" title="Kept data of deleted applications" note="Not managed any more · blocks their names and their servers">
       <RuleRow v-for="a in archives" :key="a.id">
         <div>
           <b class="font-semibold text-ink-strong">{{ a.name }}</b>
           <div class="text-[13px] text-faint">{{ a.directory }}<template v-if="a.database"> · database {{ a.database }}</template> · on {{ a.servers }}</div>
         </div>
-        <Btn small danger @click="post(`/servers/archives/${a.id}/delete`, `Permanently delete the retained files and database of ${a.name}? This cannot be undone, and frees its name unless other old cloud resources remain.`)">Delete retained data</Btn>
+        <Btn small danger @click="post(`/servers/archives/${a.id}/delete`, `Permanently erase the kept files and database of ${a.name}? This cannot be undone, and frees its name unless other old cloud resources remain.`)">Erase kept data</Btn>
       </RuleRow>
   </Panel>
 
@@ -167,7 +179,7 @@ const cell = 'border-t border-line-soft px-4 py-3.5 align-middle';
   </Panel>
 
   <template v-if="can.infrastructure">
-    <Drawer :open="owning" title="Add your own server" note="Any Ubuntu 24.04 machine you can reach as root" @close="owning = false">
+    <Drawer :open="owning" title="Add your own server" note="Any Ubuntu 22.04, 24.04 or 26.04 machine you can reach as root" @close="owning = false">
       <template v-if="byo">
         <span class="font-mono text-[10px] tracking-[0.18em] text-muted uppercase">Run this on the server, as root or with sudo</span>
         <pre class="m-0 overflow-x-auto rounded-[10px] border border-accent-line bg-sidebar p-3 font-mono text-[12.5px] leading-[1.75] break-all whitespace-pre-wrap text-ink">{{ byo.command }}</pre>

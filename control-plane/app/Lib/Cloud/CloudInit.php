@@ -94,9 +94,39 @@ die() { printf '\\033[1;31m!!\\033[0m %s\\n' "\$*" >&2; exit 1; }
 
 [ "\$(id -u)" = 0 ] || die "Run this as root: curl ... | sudo bash"
 . /etc/os-release 2>/dev/null || die "Cannot tell which OS this is."
-[ "\${ID:-}" = ubuntu ] && [ "\${VERSION_ID:-}" = "24.04" ] || [ "\${CM_ANY_OS:-0}" = 1 ] \\
-  || die "This server runs \${PRETTY_NAME:-an unknown OS}. The stack is built for Ubuntu 24.04 (set CM_ANY_OS=1 to try anyway)."
-[ ! -e /var/lib/cloud-manager/node.json ] || die "This server is already enrolled with cloud-manager."
+[ "\${ID:-}" = ubuntu ] && { [ "\${VERSION_ID:-}" = "22.04" ] || [ "\${VERSION_ID:-}" = "24.04" ] || [ "\${VERSION_ID:-}" = "26.04" ]; } || [ "\${CM_ANY_OS:-0}" = 1 ] \\
+  || die "This server runs \${PRETTY_NAME:-an unknown OS}. The stack is built for Ubuntu 22.04, 24.04 and 26.04 (set CM_ANY_OS=1 to try anyway)."
+STATE=/var/lib/cloud-manager
+BIN=/usr/local/bin/cloud-manager-agent
+UNIT=/etc/systemd/system/cloud-manager-agent.service
+
+# Everything this script puts on the server, removed: the service, the program, and the state directory with the
+# organisation CA, the single-use token and any half-written identity.
+wipe_agent() {
+  if command -v systemctl >/dev/null 2>&1 && [ -e "\$UNIT" ]; then
+    systemctl disable --now cloud-manager-agent.service >/dev/null 2>&1 || true
+  fi
+  rm -f "\$UNIT" "\$BIN" "\$BIN.new"
+  rm -rf "\${STATE:?}"
+  if command -v systemctl >/dev/null 2>&1; then systemctl daemon-reload >/dev/null 2>&1 || true; fi
+}
+
+# An earlier run that stopped part way leaves some of that behind, and a service left running keeps trying to enrol with
+# a token that is spent. Clear it first so this run starts from nothing. A server that did enrol keeps its identity
+# unless it is told to give it up.
+if [ -e "\$STATE/node.json" ]; then
+  [ "\${CM_REENROLL:-0}" = 1 ] \\
+    || die "This server is already enrolled with cloud-manager. To enrol it again, remove it in the console first, then run this with CM_REENROLL=1."
+  say "Removing the earlier enrolment (CM_REENROLL=1)"
+  wipe_agent
+elif [ -e "\$STATE" ] || [ -e "\$UNIT" ] || [ -e "\$BIN" ] || [ -e "\$BIN.new" ]; then
+  say "Cleaning up an earlier run that did not finish"
+  wipe_agent
+fi
+
+# If this run stops before the agent is started, remove what it wrote, so the next run does not meet half of it.
+started=0
+trap 'rc=\$?; if [ "\$rc" != 0 ] && [ "\$started" != 1 ]; then say "Stopped before it finished: removing what was written, so running it again starts clean"; wipe_agent; fi' EXIT
 
 case "\$(uname -m)" in
   x86_64)  platform=linux-amd64; sha={$amd} ;;
@@ -139,6 +169,7 @@ cat > /etc/systemd/system/cloud-manager-agent.service <<'UNIT'
 {$unit}
 UNIT
 systemctl daemon-reload
+started=1
 systemctl enable --now cloud-manager-agent.service >/dev/null
 
 say "Done. {$nodeId} will appear in the console once the agent connects;"

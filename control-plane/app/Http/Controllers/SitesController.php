@@ -36,6 +36,7 @@ final class SitesController extends Controller
         return Inertia::render('Sites', [
             'sites' => fn () => $this->sites(),
             'activity' => fn () => $this->activity(),
+            'archived' => fn () => $this->archived(),
             'start' => fn () => $this->start(),
             'form' => fn () => $this->form(),
             'filter' => fn () => $this->filter(),
@@ -75,8 +76,10 @@ final class SitesController extends Controller
             throw ValidationException::withMessages(['newName' => $e->getMessage()]);
         }
         $name = strtolower(trim((string) $request->input('name')));
-        if (DB::table('sites')->where('organization_id', Org::id())->where('node_id', $server)->where('name', $name)->exists()) {
-            throw ValidationException::withMessages(['newName' => "{$server} already has a site called {$name}."]);
+        $same = DB::table('sites')->where('organization_id', Org::id())->where('node_id', $server)->where('name', $name)->first();
+        if ($same !== null) {
+            // An archived application still lives on its server, so its name stays taken until it is restored and deleted.
+            throw ValidationException::withMessages(['newName' => "{$server} already has a site called {$name}".($same->archived_at !== null ? ' (archived: it still runs there)' : '').'.']);
         }
         try {
             $site = app(Sites::class)->create(Org::id(), $server, $name, strtolower(trim((string) $request->input('domain'))), $repository, trim((string) $request->input('branch')) ?: 'main', $hostKey);
@@ -112,7 +115,7 @@ final class SitesController extends Controller
     private function form(): array
     {
         return [
-            'servers' => DB::table('nodes')->where('organization_id', Org::id())
+            'servers' => DB::table('nodes')->where('organization_id', Org::id())->whereNull('archived_at')
                 ->whereNotIn('node_id', DB::table('site_nodes')->whereNotNull('autoscale_pool_id')->select('node_id'))
                 ->where(fn ($q) => $q->whereNull('role')->orWhereNotIn('role', ['ingress', \App\Lib\Providers\Incus\IncusHost::ROLE]))
                 ->orderBy('node_id')->pluck('node_id')->map(fn ($n) => ['id' => $n, 'name' => strstr($n, '.', true) ?: $n])->all(),
@@ -126,6 +129,18 @@ final class SitesController extends Controller
         $id = Projects::current();
 
         return $id === null ? [] : ['name' => (string) DB::table('projects')->where('id', $id)->value('name')];
+    }
+
+    /** Applications Unharbored no longer manages (still running on their servers), for the collapsed Archived section. @return list<array<string, mixed>> */
+    private function archived(): array
+    {
+        return Projects::sites(archived: true)->whereNull('sites.parent_site_id')->orderBy('name')->get()->map(fn ($s) => [
+            'id' => $s->id,
+            'name' => $s->name,
+            'url' => ((bool) $s->tls ? 'https://' : 'http://').$s->domain,
+            'node' => strstr($s->node_id, '.', true) ?: $s->node_id,
+            'since' => Present::ago($s->archived_at),
+        ])->all();
     }
 
     /** Every site with what is live and how its last operation went. @return list<array<string, mixed>> */

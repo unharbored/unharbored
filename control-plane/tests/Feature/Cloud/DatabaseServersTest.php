@@ -227,7 +227,8 @@ final class DatabaseServersTest extends TestCase
         $this->assertSame('0600', $key['mode']);
         $this->assertSame($cluster->attributes['ca_pem'], base64_decode(collect($steps)->firstWhere('id', 'tls-cert')['content_b64']));
         $listen = collect($steps)->firstWhere('id', 'listen')['args'][1];
-        $this->assertStringContainsString('hostssl all all 0.0.0.0/0 scram-sha-256', $listen);
+        $this->assertStringNotContainsString('0.0.0.0/0', $listen, 'Postgres starts accepting nobody: addresses are let in as they are admitted.');
+        $this->assertStringNotContainsString('::/0', $listen);
         $this->assertStringContainsString('ssl = on', $listen);
         $this->assertContains('tls-forget', array_column($steps, 'id'));
         $this->assertContains('pkg-postgresql', array_column($steps, 'id'));
@@ -236,6 +237,40 @@ final class DatabaseServersTest extends TestCase
         $this->assertContains('ufw-enable', array_column($steps, 'id'));
         $this->assertSame([], array_values(array_filter(array_column($steps, 'id'), fn ($id) => str_starts_with($id, 'ufw-database'))));
         $this->assertTrue(DB::table('server_services')->where('node_id', 'db-main.org-1')->where('service', 'pgsql')->exists());
+    }
+
+    public function test_postgres_lets_in_only_the_admitted_addresses_and_the_list_follows_the_firewall(): void
+    {
+        $cluster = $this->cluster('pg');
+        $site = $this->site();
+        $clusters = $this->app->make(DatabaseClusters::class);
+        DB::table('sites')->where('id', $site->id)->update(['database_cluster_id' => $cluster->id]);
+        $site = DB::table('sites')->where('id', $site->id)->first();
+        $script = fn () => collect(end($this->recipes)['spec']['steps'])->firstWhere('id', 'pg-hba')['args'][1];
+
+        $clusters->admitServer($site, 'web-1.org-1');
+        $this->assertStringContainsString("'hostssl all all 203.0.113.50/32 scram-sha-256'", $script());
+        $this->assertStringContainsString("sed -i '/^# cm-remote/,\$d'", $script(), 'The old list is replaced, not added to.');
+        $this->assertStringContainsString('systemctl reload postgresql', $script());
+
+        $clusters->releaseServer($site, 'web-1.org-1');
+        $this->assertStringNotContainsString('203.0.113.50', $script());
+        $this->assertStringContainsString("printf '# cm-remote", $script(), 'Nothing is let in.');
+    }
+
+    public function test_the_list_is_written_for_ipv6_and_never_takes_anything_that_is_not_an_address(): void
+    {
+        $step = DatabaseServers::hbaStep('pg', ['2001:db8::7', '203.0.113.9', 'x; rm -rf /', "1.2.3.4'; id #"]);
+        $script = $step['args'][1];
+
+        $this->assertStringContainsString('2001:db8::7/128', $script);
+        $this->assertStringContainsString('203.0.113.9/32', $script);
+        $this->assertStringNotContainsString('rm -rf', $script);
+        $this->assertStringNotContainsString('id #', $script);
+        $this->assertNull(DatabaseServers::hbaStep('mysql', ['203.0.113.9']), 'MySQL has no such list; its locks are the firewall, TLS and each site\'s password.');
+        $check = new \Symfony\Component\Process\Process(['bash', '-n', '-c', $script]);
+        $check->run();
+        $this->assertTrue($check->isSuccessful(), $check->getErrorOutput());
     }
 
     public function test_mysql_is_told_to_refuse_anything_but_tls(): void
@@ -288,15 +323,16 @@ final class DatabaseServersTest extends TestCase
         $this->assertSame([], $this->stepsTo('web-1.org-1'), 'Nothing is done on the application server.');
 
         $injected = $this->app->make(Sites::class)->injected($site);
-        $this->assertSame(['pgsql', '203.0.113.10', '5432', 'shop_app', 'shop_app', 'require'],
+        $this->assertSame(['pgsql', '203.0.113.10', '5432', 'shop_app', 'shop_app', 'verify-full'],
             array_map(fn ($k) => $injected[$k]['value'], ['DB_CONNECTION', 'DB_HOST', 'DB_PORT', 'DB_DATABASE', 'DB_USERNAME', 'DB_SSLMODE']));
         $this->assertSame(32, strlen($injected['DB_PASSWORD']['value']));
+        $this->assertStringEndsWith('/shared/database-ca.crt', $injected['PGSSLROOTCERT']['value'], 'Postgres checks the server against its own certificate, not just encrypts.');
         $row = DB::table('sites')->where('id', $site->id)->first();
         $this->assertSame([$cluster->id, 'cluster'], [(int) $row->database_cluster_id, $row->database_mode]);
         $this->assertDatabaseHas('audit_records', ['action' => 'site.database_attached']);
     }
 
-    public function test_a_mysql_user_may_connect_from_the_network_and_needs_the_ca(): void
+    public function test_a_mysql_user_may_connect_only_from_its_own_server_and_needs_the_ca(): void
     {
         $cluster = $this->cluster('mysql');
         $site = $this->site();
@@ -304,10 +340,13 @@ final class DatabaseServersTest extends TestCase
         $this->app->make(DatabaseClusters::class)->attach($site, $cluster);
 
         $grant = base64_decode(collect($this->stepsTo('db-main.org-1'))->firstWhere('id', 'script')['content_b64']);
-        $this->assertStringContainsString("@\\'%\\'", $grant, 'May connect from any address; the firewall decides which.');
+        $this->assertStringContainsString("@\\'203.0.113.50\\'", $grant, 'The account works from the site\'s own server only.');
+        $this->assertStringNotContainsString("CREATE USER IF NOT EXISTS \\'shop_app\\'@\\'%\\'", $grant);
+        $this->assertStringContainsString("DROP USER IF EXISTS \\'shop_app\\'@\\'%\\'", $grant, 'An older any-host account is removed on re-attach.');
         $injected = $this->app->make(Sites::class)->injected($site);
         $this->assertSame('mysql', $injected['DB_CONNECTION']['value']);
         $this->assertStringEndsWith('/shared/database-ca.crt', $injected['MYSQL_ATTR_SSL_CA']['value']);
+        $this->assertArrayNotHasKey('PGSSLROOTCERT', $injected);
     }
 
     public function test_admitting_twice_changes_nothing_and_releasing_removes_the_rule(): void
@@ -406,6 +445,39 @@ final class DatabaseServersTest extends TestCase
         $this->agentConnected = true;
         $this->assertSame('succeeded', $runner->run($id));
         $this->assertSame(ResourceState::Active, $this->app->make(ResourceManager::class)->find('org-1', 'database_cluster', 'main')->state);
+    }
+
+    public function test_a_database_server_whose_setup_failed_can_be_set_up_again_without_making_a_second_server(): void
+    {
+        $runner = $this->app->make(OperationRunner::class);
+        $resources = $this->app->make(ResourceManager::class);
+        $id = $runner->queueDatabaseCreate('org-1', 'main', 'pg', 'nbg1', 'cx23', 'console', 'matt', 'hetzner');
+        $this->assertSame('waiting', $runner->run($id));
+        $this->agentConnected = true;
+        $this->recipesFail = true;
+        $this->assertSame('failed', $runner->run($id));
+        $this->assertSame(ResourceState::Failed, $resources->find('org-1', 'database_cluster', 'main')->state);
+        $serverId = $resources->find('org-1', 'server', 'db-main')->id;
+
+        $this->recipesFail = false;
+        $runner->queueRetry($id, 'matt');
+        $this->assertSame('succeeded', $runner->run($id), (string) DB::table('operations')->where('id', $id)->value('error'));
+
+        $this->assertSame(ResourceState::Active, $resources->find('org-1', 'database_cluster', 'main')->state);
+        $this->assertSame($serverId, $resources->find('org-1', 'server', 'db-main')->id, 'The server that was made is the one set up.');
+    }
+
+    public function test_a_database_creation_whose_server_is_gone_is_not_retried(): void
+    {
+        $runner = $this->app->make(OperationRunner::class);
+        $id = $runner->queueDatabaseCreate('org-1', 'main', 'pg', 'nbg1', 'cx23', 'console', 'matt', 'hetzner');
+        $this->assertSame('waiting', $runner->run($id));
+        Carbon::setTestNow(now()->addMinutes(16));
+        $this->assertSame('failed', $runner->run($id));
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Its server is gone');
+        $runner->queueRetry($id, 'matt');
     }
 
     public function test_a_server_that_never_enrolls_is_destroyed_so_it_does_not_keep_billing(): void

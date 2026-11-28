@@ -76,7 +76,7 @@ final class ServiceBackups
         $busy = DB::table('operations')->whereIn('status', ['queued', 'running'])->whereNotNull('meta->service_id')->get(['meta'])
             ->map(fn ($o) => (int) (json_decode((string) $o->meta, true)['service_id'] ?? 0))->all();
 
-        return DB::table('services')->whereIn('status', ['running', 'stopped'])->orderBy('id')->get()
+        return DB::table('services')->whereIn('status', ['running', 'stopped'])->whereNotIn('node_id', DB::table('nodes')->whereNotNull('archived_at')->select('node_id'))->orderBy('id')->get()
             ->filter(fn ($s) => self::choice($s) !== 'none' && ! in_array((int) $s->id, $busy, true))->values()->all();
     }
 

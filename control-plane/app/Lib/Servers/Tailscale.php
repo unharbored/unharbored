@@ -73,7 +73,7 @@ final class Tailscale
     }
 
     /**
-     * Install (once), then join. Ubuntu 24.04 is the only supported release, so the repository is noble's.
+     * Install (once), then join. The package repository is the one for the release the server runs (22.04, 24.04 or 26.04).
      *
      * @return array{name: string, steps: list<array<string, mixed>>}
      */
@@ -84,10 +84,11 @@ final class Tailscale
 
         return ['name' => 'tailscale-join', 'steps' => [
             ['id' => 'ts-curl', 'type' => 'package', 'name' => 'curl'],
-            ['id' => 'ts-keyring', 'type' => 'command', 'name' => 'sh', 'args' => ['-c', "curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/noble.noarmor.gpg -o {$keyring}"],
+            // The repository is named for the release the server runs, read from the server itself.
+            ['id' => 'ts-keyring', 'type' => 'command', 'name' => 'sh', 'args' => ['-c', ". /etc/os-release && curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/\$VERSION_CODENAME.noarmor.gpg -o {$keyring}"],
                 'unless' => ['test', '-s', $keyring], 'description' => "Tailscale's package signing key"],
-            ['id' => 'ts-source', 'type' => 'file', 'path' => '/etc/apt/sources.list.d/tailscale.list', 'mode' => '0644',
-                'content_b64' => base64_encode("deb [signed-by={$keyring}] https://pkgs.tailscale.com/stable/ubuntu noble main\n")],
+            ['id' => 'ts-source', 'type' => 'command', 'name' => 'sh', 'args' => ['-c', ". /etc/os-release && echo \"deb [signed-by={$keyring}] https://pkgs.tailscale.com/stable/ubuntu \$VERSION_CODENAME main\" > /etc/apt/sources.list.d/tailscale.list"],
+                'unless' => ['test', '-s', '/etc/apt/sources.list.d/tailscale.list'], 'description' => "Tailscale's package source"],
             ['id' => 'ts-update', 'type' => 'command', 'name' => 'apt-get', 'args' => ['update', '-qq'], 'unless' => $installed, 'description' => 'refresh the package lists'],
             ['id' => 'ts-package', 'type' => 'package', 'name' => 'tailscale'],
             ['id' => 'ts-service', 'type' => 'service', 'name' => 'tailscaled', 'state' => 'running'],

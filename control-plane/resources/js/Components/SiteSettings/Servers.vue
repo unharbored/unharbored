@@ -24,6 +24,11 @@ const windowTo = ref(22);
 const windowMin = ref(2);
 const dayChoices = { every: 'Every day', weekdays: 'Weekdays', weekends: 'Weekends', mon: 'Mondays', tue: 'Tuesdays', wed: 'Wednesdays', thu: 'Thursdays', fri: 'Fridays', sat: 'Saturdays', sun: 'Sundays' };
 
+async function removeAndDestroy(s) {
+    if (await ask({ title: 'Remove and destroy the server?', message: `Stop serving ${props.site.name} from ${s.name}, then destroy ${s.name} at the provider? Everything on it is deleted and it stops billing. If another application uses it, it is only removed from this one and kept.`, ok: 'Remove and destroy', tone: 'danger' })) {
+        send('servers/remove', { node: s.id, destroy: true });
+    }
+}
 async function removeServer(s) {
     if (await ask({ title: 'Remove the server?', message: `Stop serving ${props.site.name} from ${s.name}? Its nginx site, workers, schedule and files there are removed, and the server loses access to the site's database and cache unless another site there uses them.`, ok: 'Remove' })) {
         send('servers/remove', { node: s.id });
@@ -83,7 +88,7 @@ const hours = (h) => String(h).padStart(2, '0') + ':00';
   <Panel id="servers" title="Servers" note="Every deploy builds on all of them, then switches all of them">
       <div v-for="s in data.servers" :key="s.id" class="flex justify-between gap-3 items-center">
         <span><b class="font-semibold text-ink-strong">{{ s.name }}</b> <span class="text-faint text-[13px]">{{ s.primary ? 'primary · migrations, scheduler, HTTPS certificate' : (s.pooled ? 'added by autoscaling' : s.role === 'worker' ? 'worker · runs only the processes set to run on workers, no web traffic' : (data.balancer ? 'web and workers, behind the balancer' : 'web and workers · port 80 only until a load balancer fronts the site')) }}</span></span>
-        <Btn small v-if="!s.primary && !s.pooled" @click="removeServer(s)">Remove</Btn>
+        <span v-if="!s.primary && !s.pooled" class="flex gap-2"><Btn small @click="removeServer(s)">Remove</Btn><Btn v-if="s.destroyable" small danger @click="removeAndDestroy(s)">Remove and destroy</Btn></span>
       </div>
       <div v-if="data.spare.length > 0 || data.newServer" class="flex flex-wrap items-end gap-3">
         <Field label="Add a server" class="flex-[1_1_180px]" v-slot="{ id }">

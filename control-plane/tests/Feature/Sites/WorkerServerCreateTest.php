@@ -6,6 +6,7 @@ namespace Tests\Feature\Sites;
 
 use App\Lib\Operations\OperationRunner;
 use App\Lib\Providers\Providers;
+use App\Lib\Resources\ResourceManager;
 use App\Lib\Sites\Sites;
 use App\Lib\Vault\KeyManager;
 use App\Lib\Vault\LocalKeyManager;
@@ -13,6 +14,7 @@ use App\Lib\Vault\Vault;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Inertia\Testing\AssertableInertia as Assert;
 use stdClass;
@@ -35,6 +37,7 @@ final class WorkerServerCreateTest extends TestCase
         DB::table('organizations')->insertOrIgnore(['id' => 'org-1', 'name' => 'Acme', 'created_at' => now(), 'updated_at' => now()]);
         $this->site = $this->app->make(Sites::class)->create('org-1', 'web-1.org-1', 'demo', 'demo.example.com', 'git@github.com:acme/demo.git');
         DB::table('sites')->where('id', $this->site->id)->update(['provider' => 'hetzner', 'database_cluster_id' => 1]);
+        $this->app->make(Sites::class)->setEnv($this->site, "DB_CONNECTION=mysql\n", 'a managed database is attached');
     }
 
     private function member(string $role): User
@@ -151,5 +154,60 @@ final class WorkerServerCreateTest extends TestCase
         $this->assertSame('failed', $runner->run($id));
         $this->assertStringContainsString('still there', (string) DB::table('operations')->where('id', $id)->value('error'));
         $this->assertStringContainsString('deploy failed on it', (string) DB::table('operations')->where('id', $id)->value('error'));
+    }
+
+    private function workerServer(bool $madeHere): void
+    {
+        DB::table('nodes')->insert(['node_id' => 'demo-worker.org-1', 'organization_id' => 'org-1', 'created_at' => now(), 'updated_at' => now()]);
+        DB::table('site_nodes')->insert(['site_id' => $this->site->id, 'node_id' => 'demo-worker.org-1', 'role' => 'worker', 'created_at' => now(), 'updated_at' => now()]);
+        if ($madeHere) {
+            $server = $this->app->make(ResourceManager::class)->declare('org-1', 'server', 'demo-worker', [], provider: 'hetzner');
+            $this->app->make(ResourceManager::class)->recordExternalId($server, '4242');
+        }
+    }
+
+    public function test_a_worker_server_is_destroyed_with_its_removal_only_when_this_platform_made_it(): void
+    {
+        $this->member('owner');
+        $this->workerServer(false);
+        $remove = fn (array $over = []) => $this->post("/site/settings/{$this->site->id}/servers/remove", ['node' => 'demo-worker.org-1'] + $over);
+
+        $remove(['destroy' => true])->assertSessionHasErrors('server');
+        $this->assertSame(0, DB::table('operations')->where('kind', 'server_remove')->count(), 'A server the user brought is never destroyed.');
+        $remove()->assertRedirect()->assertSessionHasNoErrors();
+        $this->assertFalse(json_decode((string) DB::table('operations')->where('kind', 'server_remove')->sole()->meta, true)['destroy']);
+
+        DB::table('operations')->delete();
+        DB::table('resources')->insert(['organization_id' => 'org-1', 'type' => 'server', 'provider' => 'hetzner', 'slug' => 'demo-worker', 'external_id' => '4242', 'state' => 'active',
+            'desired_state' => 'active', 'idempotency_key' => 'k', 'version' => 1, 'state_entered_at' => now(), 'created_at' => now(), 'updated_at' => now()]);
+        $remove(['destroy' => true])->assertRedirect()->assertSessionHasNoErrors();
+        $op = DB::table('operations')->where('kind', 'server_remove')->sole();
+        $this->assertTrue(json_decode((string) $op->meta, true)['destroy']);
+        $this->assertStringContainsString('and destroy it', $op->title);
+    }
+
+    public function test_removing_with_destroy_takes_it_off_the_application_then_queues_its_destruction_and_keeps_it_if_another_site_uses_it(): void
+    {
+        $this->member('owner');
+        $this->workerServer(true);
+        DB::table('sites')->where('id', $this->site->id)->update(['database_cluster_id' => null]);
+        Http::fake(['*' => Http::response(['outcome_known' => true, 'status' => 'succeeded', 'detail' => ['run' => ['steps' => []]]])]);
+        $runner = $this->app->make(OperationRunner::class);
+
+        $id = $runner->queueServerRemove($this->site->id, 'demo-worker.org-1', 'console', 'a@b.c', true);
+        $this->assertSame('succeeded', $runner->run($id), (string) DB::table('operations')->where('id', $id)->value('error'));
+
+        $this->assertSame(0, DB::table('site_nodes')->where('node_id', 'demo-worker.org-1')->count(), 'off the application first');
+        $destroy = DB::table('operations')->where('kind', 'server_destroy')->sole();
+        $this->assertSame('demo-worker.org-1', $destroy->node_id);
+
+        // Another application on the same server: removed from this one, kept.
+        DB::table('operations')->delete();
+        $other = $this->app->make(Sites::class)->create('org-1', 'demo-worker.org-1', 'other', 'other.example.com', 'git@github.com:acme/other.git');
+        DB::table('site_nodes')->insert(['site_id' => $this->site->id, 'node_id' => 'demo-worker.org-1', 'role' => 'worker', 'created_at' => now(), 'updated_at' => now()]);
+        $id = $runner->queueServerRemove($this->site->id, 'demo-worker.org-1', 'console', 'a@b.c', true);
+        $this->assertSame('succeeded', $runner->run($id));
+        $this->assertSame(0, DB::table('operations')->where('kind', 'server_destroy')->count());
+        $this->assertStringContainsString('kept, not destroyed', (string) DB::table('operations')->where('id', $id)->value('log'));
     }
 }

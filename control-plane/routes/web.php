@@ -71,7 +71,7 @@ Route::post('/theme', function (Illuminate\Http\Request $request) {
 // The console. Each page is a layout around one component; the components
 // fetch their own data through server methods, which also require the
 // session.
-Route::middleware(['auth', 'member'])->group(function () {
+Route::middleware(['auth', 'member', 'site-active'])->group(function () {
     Route::redirect('/', '/sites');
     // ?project=<slug> sets the project filter (an unknown slug is ignored).
     Route::get('/sites', [\App\Http\Controllers\SitesController::class, 'index'])->name('sites');
@@ -128,6 +128,7 @@ Route::middleware(['auth', 'member'])->group(function () {
     require __DIR__.'/site-settings.php';
     Route::get('/site/deployments', [\App\Http\Controllers\SiteDeploymentsController::class, 'show'])->name('site.deployments');
     Route::get('/site/logs', [\App\Http\Controllers\LogsController::class, 'index'])->name('site.logs');
+    Route::post('/site/logs/clear', [\App\Http\Controllers\LogsController::class, 'clear'])->name('site.logs.clear');
     Route::get('/site/console', [\App\Http\Controllers\ConsoleController::class, 'show'])->name('site.console');
     Route::post('/console/open', [\App\Http\Controllers\ConsoleController::class, 'open'])->middleware('throttle:30,1')->name('console.open');
     Route::post('/console/{session}/start', [\App\Http\Controllers\ConsoleController::class, 'start'])->middleware('throttle:30,1')->name('console.start');
@@ -143,7 +144,10 @@ Route::middleware(['auth', 'member'])->group(function () {
     Route::post('/servers/droplets/{resource}/destroy', [\App\Http\Controllers\ServersController::class, 'destroyDroplet'])->whereNumber('resource')->name('servers.droplet.destroy');
     Route::post('/servers/archives/{archive}/delete', [\App\Http\Controllers\ServersController::class, 'deleteArchive'])->whereNumber('archive')->name('servers.archive.delete');
     Route::post('/servers/{node}/disconnect', [\App\Http\Controllers\ServersController::class, 'disconnect'])->name('servers.disconnect');
+    Route::post('/servers/{node}/archive', [\App\Http\Controllers\ServersController::class, 'archive'])->name('servers.archive');
+    Route::post('/servers/{node}/restore', [\App\Http\Controllers\ServersController::class, 'restore'])->name('servers.restore');
     Route::post('/servers/{node}/remove-stale', [\App\Http\Controllers\ServersController::class, 'removeStale'])->name('servers.stale');
+    Route::post('/servers/{node}/delete', [\App\Http\Controllers\ServersController::class, 'delete'])->name('servers.delete');
     Route::post('/servers/{node}/destroy', [\App\Http\Controllers\ServersController::class, 'destroy'])->name('servers.destroy');
     Route::post('/servers/{node}/repair', [\App\Http\Controllers\ServersController::class, 'repair'])->name('servers.repair');
     Route::post('/servers/{node}/upgrade-agent', [\App\Http\Controllers\ServersController::class, 'upgradeAgent'])->name('servers.upgrade');
@@ -165,7 +169,12 @@ Route::middleware(['auth', 'member'])->group(function () {
     Route::post('/server/containers/refresh', [\App\Http\Controllers\ServerContainersController::class, 'refresh'])->name('server.containers.refresh');
     Route::get('/databases', [\App\Http\Controllers\DatabasesController::class, 'index'])->name('databases');
     Route::post('/databases', [\App\Http\Controllers\DatabasesController::class, 'store'])->name('databases.store');
+    Route::get('/databases/discover', [\App\Http\Controllers\DatabasesController::class, 'discover'])->name('databases.discover');
+    Route::post('/databases/adopt', [\App\Http\Controllers\DatabasesController::class, 'adopt'])->name('databases.adopt');
     Route::delete('/databases/{cluster}', [\App\Http\Controllers\DatabasesController::class, 'destroy'])->whereNumber('cluster')->name('databases.destroy');
+    Route::post('/databases/{cluster}/archive', [\App\Http\Controllers\DatabasesController::class, 'archive'])->whereNumber('cluster')->name('databases.archive');
+    Route::post('/databases/{cluster}/restore', [\App\Http\Controllers\DatabasesController::class, 'restore'])->whereNumber('cluster')->name('databases.restore');
+    Route::post('/databases/{cluster}/certificate', [\App\Http\Controllers\DatabasesController::class, 'reissue'])->whereNumber('cluster')->name('databases.reissue');
     Route::get('/audit', [\App\Http\Controllers\AuditController::class, 'index'])->name('audit');
     Route::get('/alerts', [\App\Http\Controllers\AlertsController::class, 'index'])->name('alerts');
     Route::post('/alerts/webhook', [\App\Http\Controllers\AlertsController::class, 'saveWebhook'])->name('alerts.webhook');

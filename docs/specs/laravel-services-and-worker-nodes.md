@@ -1,6 +1,6 @@
 # Laravel services and worker nodes
 
-Status: **A is built** (branch `laravel-service-presets`, not live-tested); **A and B (all three steps) are built** (branches `laravel-service-presets` and `worker-nodes`; not live-tested): roles in the code, adding an existing server as a worker, a Runs on choice per process and for the built-in workers, and making a new server for the application (`site_server_create`: one operation, a provision child then a server_add child). What is left is the live test, and syncing to the public repository. Two pieces, in this order:
+Status: **A is built** (branch `laravel-service-presets`, not live-tested); **A and B (all three steps) are built** (branches `laravel-service-presets` and `worker-nodes`; not live-tested; adding a server is refused when the environment keeps the cache, sessions or queue on one server's disk): roles in the code, adding an existing server as a worker, a Runs on choice per process and for the built-in workers, and making a new server for the application (`site_server_create`: one operation, a provision child then a server_add child). What is left is the live test, and syncing to the public repository. Two pieces, in this order:
 
 - **A. Laravel service presets.** Horizon, Pulse, Nightwatch, Reverb, named queue workers, added from a list instead of typed as commands.
 - **B. Worker nodes.** A server that belongs to an application but serves no web traffic, and runs only the processes assigned to it.
@@ -125,7 +125,7 @@ The existing code asks "which servers does this site run on?" through `Sites::no
 ### Failure and safety cases to handle
 
 - Worker server unreachable at deploy: today a failed node fails the deploy. For a worker the deploy still fails (the release is inconsistent otherwise), with the server named; this matches web behaviour and is the simple, honest choice. A later option is "continue without this server".
-- Removing a worker server: stops its programs, takes the site off it (`removalRecipe`), does not destroy the server (it is the user's); offers "destroy this server too" when the console made it.
+- Removing a worker server: stops its programs, takes the site off it (`removalRecipe`), does not destroy the server (it is the user's); offers "destroy this server too" when the console made it. **Built:** "Remove and destroy" appears for a server this platform made; it queues the destroy after the removal, and the destroy refuses, keeping the server, if another application still uses it.
 - Switching a processes' `runs_on` to `worker` when no worker server exists: allowed, shown as "no server runs this yet". Not an error, and not silent.
 - Changing a server's role after the fact: not offered in v1 (remove and re-add).
 

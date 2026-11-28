@@ -130,7 +130,7 @@ final class ServersPage
 
             $blockers = [];
             if ($sites->isNotEmpty()) {
-                $blockers[] = 'Hosts '.$sites->pluck('name')->join(', ').'. Delete those applications first.';
+                $blockers[] = 'Hosts '.$sites->pluck('name')->join(', ').'. Delete those applications first, or use Delete server, which lets you decide for each.';
             }
             if ($busy) {
                 $blockers[] = 'An operation is running on this server.';
@@ -165,6 +165,8 @@ final class ServersPage
                 'id' => $node->node_id,
                 'name' => $slug,
                 'role' => $role,
+                'archived' => $node->archived_at !== null,
+                'archivesWith' => DB::table('sites')->where('node_id', $node->node_id)->whereNull('parent_site_id')->whereNull('archived_at')->orderBy('name')->pluck('name')->all(),
                 'hosted' => $hosted,
                 'connected' => $live !== null,
                 'since' => $live ? Present::ago($live['connected_at'] ?? null) : null,
@@ -183,7 +185,7 @@ final class ServersPage
                 'busy' => $busy,
                 'droplet' => $droplet,
                 'stale' => $stale,
-                'php' => array_values(array_unique([ServerStack::PHP_VERSION,
+                'php' => array_values(array_unique([ServerStack::defaultPhpFor($node->node_id),
                     ...DB::table('server_php_versions')->where('node_id', $node->node_id)->pluck('version')->all()])),
                 'phpPatches' => json_decode((string) ($node->php_patches ?? ''), true) ?: [],
                 'services' => DB::table('server_services')->where('node_id', $node->node_id)->where('state', 'installed')->pluck('service')->all(),
@@ -203,12 +205,12 @@ final class ServersPage
      * @param  Collection<string, array<string, mixed>>  $connected
      * @return list<array<string, mixed>>
      */
-    public function rows(Collection $connected): array
+    public function rows(Collection $connected, bool $archived = false): array
     {
         $serving = app(AgentRelease::class)->version();
         $membership = $this->poolMembership();
         $rows = [];
-        foreach (DB::table('nodes')->where('organization_id', Org::id())->orderBy('node_id')->get() as $node) {
+        foreach (DB::table('nodes')->where('organization_id', Org::id())->when($archived, fn ($q) => $q->whereNotNull('archived_at'), fn ($q) => $q->whereNull('archived_at'))->orderBy('node_id')->get() as $node) {
             $slug = strstr($node->node_id, '.', true) ?: $node->node_id;
             $resource = DB::table('resources')->where('organization_id', $node->organization_id)->where('slug', $slug)->first();
             $attrs = json_decode((string) ($resource->attributes ?? '{}'), true) ?: [];
@@ -219,6 +221,7 @@ final class ServersPage
                 'name' => $slug,
                 'connected' => $live !== null,
                 'since' => $live ? Present::ago($live['connected_at'] ?? null) : null,
+                'archivedSince' => $node->archived_at === null ? null : Present::ago($node->archived_at),
                 'lastSeen' => Present::ago($node->last_seen_at),
                 'stale' => $resource !== null && $resource->type === 'server' && $resource->state === 'deleted',
                 'compute' => $this->compute($resource, $attrs),

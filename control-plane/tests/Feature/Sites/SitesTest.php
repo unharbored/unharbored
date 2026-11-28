@@ -352,6 +352,7 @@ final class SitesTest extends TestCase
             ['status' => 'succeeded'],                                          // setup
             ['status' => 'succeeded'],                                          // fetch
             ['status' => 'succeeded'],                                          // prepare
+            ['status' => 'succeeded'],                                          // which PHP the packages need
             ['status' => 'succeeded'],                                          // build
             ['status' => 'succeeded', 'detail' => ['output' => "abc123\n"]],     // rev-parse
             ['status' => 'succeeded'],                                          // activate
@@ -369,7 +370,7 @@ final class SitesTest extends TestCase
 
             return true;
         });
-        $this->assertSame(['apply_recipe', 'apply_recipe', 'deploy', 'apply_recipe', 'exec', 'activate_release', 'apply_recipe', 'prune_releases'], $kinds);
+        $this->assertSame(['apply_recipe', 'apply_recipe', 'deploy', 'exec', 'apply_recipe', 'exec', 'activate_release', 'apply_recipe', 'prune_releases'], $kinds);
 
         $this->assertSame('20261105T190000Z-main', DB::table('sites')->where('id', $site->id)->value('current_release'));
         $this->assertSame(1, DB::table('audit_records')->where('action', 'site.deployed')->count());
@@ -473,7 +474,7 @@ final class SitesTest extends TestCase
     {
         $site = $this->site();
         [$deployer] = $this->deployerAgainst([
-            ['status' => 'succeeded'], ['status' => 'succeeded'], ['status' => 'succeeded'], ['status' => 'succeeded'],
+            ['status' => 'succeeded'], ['status' => 'succeeded'], ['status' => 'succeeded'], ['status' => 'succeeded'], ['status' => 'succeeded'],
             ['status' => 'succeeded', 'detail' => ['output' => 'abc']],
             ['status' => 'succeeded'],
             ['status' => 'failed', 'error' => 'recipe step "supervisor-update" failed'],
@@ -826,12 +827,71 @@ final class SitesTest extends TestCase
         $this->assertStringNotContainsString('proxy_pass', $this->vhostOf($this->site()));
     }
 
+    private function packagesNeeding(string $constraint): array
+    {
+        return ['status' => 'succeeded', 'detail' => ['output' => json_encode(['composer' => ['require' => ['php' => '^8.2'], 'config' => ['platform' => ['php' => null]]],
+            'lock' => ['packages' => [['require' => ['php' => $constraint]]]]])]];
+    }
+
+    public function test_a_lock_that_needs_a_newer_php_than_the_sites_moves_it_to_an_installed_branch_that_is_new_enough(): void
+    {
+        $site = $this->site();
+        DB::table('server_php_versions')->insert(['node_id' => $site->node_id, 'version' => '8.5', 'created_at' => now(), 'updated_at' => now()]);
+        [$deployer] = $this->deployerAgainst([
+            ['status' => 'succeeded'], ['status' => 'succeeded'], ['status' => 'succeeded'],
+            $this->packagesNeeding('>=8.5'),
+            ['status' => 'succeeded'],
+            ['status' => 'succeeded', 'detail' => ['output' => 'abc']],
+            ['status' => 'succeeded'], ['status' => 'succeeded'], ['status' => 'succeeded', 'detail' => ['deleted' => []]],
+        ]);
+
+        $deployer->deploy($site, now: '20261105T190000Z');
+
+        $this->assertSame('8.5', DB::table('sites')->where('id', $site->id)->value('php_version'));
+    }
+
+    public function test_a_lock_that_needs_a_newer_php_the_server_lacks_stops_the_deploy_before_building_and_says_which(): void
+    {
+        $site = $this->site();
+        [$deployer, $http] = $this->deployerAgainst([
+            ['status' => 'succeeded'], ['status' => 'succeeded'], ['status' => 'succeeded'],
+            $this->packagesNeeding('>=8.5'),
+        ]);
+
+        try {
+            $deployer->deploy($site, now: '20261105T190000Z');
+            $this->fail('The deploy should have stopped.');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('need PHP 8.5 or newer', $e->getMessage());
+            $this->assertStringContainsString('Install PHP 8.5', $e->getMessage());
+        }
+        $http->assertSentCount(4);
+        $this->assertSame('8.4', DB::table('sites')->where('id', $site->id)->value('php_version'));
+    }
+
+    public function test_a_php_newer_than_the_packages_declare_is_left_alone(): void
+    {
+        $site = $this->site();
+        [$deployer, $http] = $this->deployerAgainst([
+            ['status' => 'succeeded'], ['status' => 'succeeded'], ['status' => 'succeeded'],
+            $this->packagesNeeding('8.0 - 8.3'),
+            ['status' => 'succeeded'],
+            ['status' => 'succeeded', 'detail' => ['output' => 'abc']],
+            ['status' => 'succeeded'], ['status' => 'succeeded'], ['status' => 'succeeded', 'detail' => ['deleted' => []]],
+        ]);
+
+        $deployer->deploy($site, now: '20261105T190000Z');
+
+        $this->assertSame('8.4', DB::table('sites')->where('id', $site->id)->value('php_version'));
+        $http->assertSent(fn (Request $r) => $r['kind'] === 'apply_recipe' && str_contains(json_encode($r->data()), 'COMPOSER_IGNORE_PLATFORM_REQS=php+'));
+    }
+
     public function test_a_failed_prune_does_not_fail_a_live_deploy(): void
     {
         // An agent too old to know prune_releases answers "unsupported".
         $site = $this->site();
         [$deployer] = $this->deployerAgainst([
-            ['status' => 'succeeded'], ['status' => 'succeeded'], ['status' => 'succeeded'], ['status' => 'succeeded'],
+            ['status' => 'succeeded'], ['status' => 'succeeded'], ['status' => 'succeeded'], ['status' => 'succeeded'], ['status' => 'succeeded'],
             ['status' => 'succeeded', 'detail' => ['output' => 'abc']],
             ['status' => 'succeeded'],
             ['status' => 'succeeded'],
@@ -853,6 +913,7 @@ final class SitesTest extends TestCase
             ['status' => 'succeeded'],
             ['status' => 'succeeded'],
             ['status' => 'succeeded'],
+            ['status' => 'succeeded'],
             ['status' => 'failed', 'error' => 'recipe step "composer" failed'],
         ]);
 
@@ -867,6 +928,22 @@ final class SitesTest extends TestCase
         $http->assertNotSent(fn (Request $r) => $r['kind'] === 'activate_release');
         $this->assertSame('previous', DB::table('sites')->where('id', $site->id)->value('current_release'));
         $this->assertSame(1, DB::table('audit_records')->where('action', 'site.deploy_failed')->count());
+    }
+
+    public function test_connection_details_carry_the_parts_and_a_database_on_the_server_has_no_tls(): void
+    {
+        $remote = Sites::connectionDetails(['DB_CONNECTION' => 'pgsql', 'DB_HOST' => 'db.example.com', 'DB_PORT' => '25060', 'DB_DATABASE' => 'app_db', 'DB_USERNAME' => 'app', 'DB_PASSWORD' => 'p@ss']);
+        $this->assertSame(['postgresql', 'db.example.com', '25060', 'app_db', 'app', 'p@ss', false], [$remote['engine'], $remote['host'], $remote['port'], $remote['database'], $remote['username'], $remote['password'], $remote['local']]);
+        $this->assertStringEndsWith('?sslmode=require', $remote['url']);
+
+        // MySQL or PostgreSQL that Unharbored set up on the server itself: loopback, no TLS to ask for.
+        $mysql = Sites::connectionDetails(['DB_CONNECTION' => 'mysql', 'DB_HOST' => '127.0.0.1', 'DB_PORT' => '3306', 'DB_DATABASE' => 'shop', 'DB_USERNAME' => 'shop', 'DB_PASSWORD' => 'pw']);
+        $this->assertTrue($mysql['local']);
+        $this->assertSame('mysql://shop:pw@127.0.0.1:3306/shop', $mysql['url']);
+        $pg = Sites::connectionDetails(['DB_CONNECTION' => 'pgsql', 'DB_HOST' => '127.0.0.1', 'DB_DATABASE' => 'shop', 'DB_USERNAME' => 'shop', 'DB_PASSWORD' => 'pw']);
+        $this->assertSame('postgresql://shop:pw@127.0.0.1:5432/shop?sslmode=disable', $pg['url']);
+
+        $this->assertNull(Sites::connectionDetails(['DB_CONNECTION' => 'sqlite', 'DB_DATABASE' => '/x/db.sqlite']));
     }
 
     public function test_a_connection_url_is_built_from_the_database_values(): void

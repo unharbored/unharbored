@@ -100,7 +100,8 @@ final class Alerts
     {
         $rules = self::settings($organizationId);
         $out = [];
-        $nodes = DB::table('nodes')->where('organization_id', $organizationId)->get();
+        // An archived server is not watched: no offline, disk or CPU alert.
+        $nodes = DB::table('nodes')->where('organization_id', $organizationId)->whereNull('archived_at')->get();
         try {
             $connected = collect($this->gateway->connectedNodes())->pluck('node_id')->flip();
         } catch (Throwable) {
@@ -144,7 +145,10 @@ final class Alerts
         foreach (DB::table('resources')->where('organization_id', $organizationId)->where('type', 'autoscale_pool')->where('state', 'active')->get(['id', 'attributes']) as $pool) {
             $a = json_decode((string) $pool->attributes, true) ?: [];
             if (isset($a['paused_at'])) {
-                $site = DB::table('sites')->where('autoscale_pool_id', $pool->id)->first(['id', 'name']);
+                $site = DB::table('sites')->where('autoscale_pool_id', $pool->id)->first(['id', 'name', 'archived_at']);
+                if ($site !== null && $site->archived_at !== null) {
+                    continue; // archived: not managed here any more
+                }
                 $out["autoscaler:{$pool->id}"] = ['severity' => 'critical', 'title' => 'Autoscaling'.($site ? " {$site->name}" : '').' has stopped adding servers',
                     'detail' => (string) ($a['paused_because'] ?? ''), 'link' => $site ? "/site/settings?site={$site->id}&tab=servers" : '/sites'];
             }
@@ -153,7 +157,7 @@ final class Alerts
         // A certificate that ends inside the window, or already has: certbot should have renewed it, so something is wrong.
         if ($rules['certificate_days'] > 0) {
             $limit = now()->addDays($rules['certificate_days']);
-            foreach (DB::table('sites')->where('organization_id', $organizationId)->where('tls', true)->whereNotNull('cert_expires_at')->where('cert_expires_at', '<=', $limit)->get(['id', 'name', 'cert_expires_at']) as $site) {
+            foreach (DB::table('sites')->where('organization_id', $organizationId)->whereNull('archived_at')->where('tls', true)->whereNotNull('cert_expires_at')->where('cert_expires_at', '<=', $limit)->get(['id', 'name', 'cert_expires_at']) as $site) {
                 $status = \App\Lib\Sites\Sites::certificateStatus($site->cert_expires_at);
                 $out["certificate:{$site->id}"] = ['severity' => $status['days'] < 7 ? 'critical' : 'warning',
                     'title' => $status['days'] < 0 ? "{$site->name}'s certificate has expired" : "{$site->name}'s certificate expires soon",

@@ -12,16 +12,19 @@ async function savePhp(version) {
         send('php', { version });
     }
 }
+
+// 8.4 becomes 8.4.13 once a server has been read; before that, just the branch.
+const full = (v) => (props.data.phpPatches?.[v] ?? v);
 </script>
 
 <template>
   <Panel id="runtime" title="PHP version" note="Applies on next deploy">
       <div class="flex justify-between gap-3 flex-wrap items-center">
-        <span>Running: <b class="font-semibold text-ink-strong">{{ data.phpVersion }}</b> <span class="text-faint text-[13px]">· change takes effect on the next deploy</span></span>
+        <span>Running: <b class="font-semibold text-ink-strong">{{ full(data.phpVersion) }}</b> <span class="text-faint text-[13px]">· change takes effect on the next deploy</span></span>
         <div class="flex flex-wrap gap-2">
           <template v-for="v in data.phpVersions" :key="v">
-            <Btn small v-if="v === data.phpVersion" disabled>{{ v }} · current</Btn>
-            <Btn small v-else @click="savePhp(v)">{{ v }} <template v-if="v === data.phpDefault"> · default </template></Btn>
+            <Btn small v-if="v === data.phpVersion" disabled>{{ full(v) }} · current</Btn>
+            <Btn small v-else @click="savePhp(v)">{{ full(v) }} <template v-if="v === data.phpDefault"> · default </template></Btn>
           </template>
         </div>
       </div>

@@ -8,6 +8,7 @@ use App\Lib\Agent\AgentRelease;
 use App\Lib\Cloud\CloudInit;
 use App\Lib\Pki\CertificateAuthority;
 use PHPUnit\Framework\TestCase;
+use Symfony\Component\Process\Process;
 use Symfony\Component\Yaml\Yaml;
 
 /**
@@ -105,15 +106,15 @@ final class CloudInitTest extends TestCase
     {
         $yaml = $this->build();
 
-        $this->assertStringNotContainsString(chr(13), $yaml, "cloud-init carries CRLF line endings.");
+        $this->assertStringNotContainsString(chr(13), $yaml, 'cloud-init carries CRLF line endings.');
 
         // Including inside the embedded files, which are what actually land
         // on the node.
         foreach ($this->fileMap($this->parse($yaml)) as $path => $file) {
             $this->assertStringNotContainsString(
                 chr(13),
-                (string) $file["content"],
-                $path." would be written with CRLF."
+                (string) $file['content'],
+                $path.' would be written with CRLF.'
             );
         }
     }
@@ -124,11 +125,11 @@ final class CloudInitTest extends TestCase
      */
     public function test_no_runcmd_entry_has_trailing_whitespace(): void
     {
-        foreach ($this->parse($this->build())["runcmd"] as $cmd) {
+        foreach ($this->parse($this->build())['runcmd'] as $cmd) {
             $this->assertSame(
                 rtrim((string) $cmd),
                 (string) $cmd,
-                "A runcmd entry has trailing whitespace: ".var_export($cmd, true)
+                'A runcmd entry has trailing whitespace: '.var_export($cmd, true)
             );
         }
     }
@@ -310,8 +311,8 @@ final class CloudInitTest extends TestCase
             'arm64',
         );
 
-        $runcmd = implode("
-", array_map('strval', $this->parse($yaml)['runcmd']));
+        $runcmd = implode('
+', array_map('strval', $this->parse($yaml)['runcmd']));
 
         $this->assertStringContainsString('/api/agent/linux-arm64', $runcmd);
         $this->assertStringContainsString($armSha, $runcmd);
@@ -354,5 +355,106 @@ final class CloudInitTest extends TestCase
         }
 
         return null;
+    }
+
+    /**
+     * Runs the install script's own cleanup block, as sh would, against a sandbox standing in for the server.
+     *
+     * @param  array<string, string>  $files  paths relative to the sandbox, with contents
+     * @return array{output: string, code: int, left: list<string>}
+     */
+    private function runInstallPrelude(array $files, array $env = [], string $then = ':'): array
+    {
+        $script = $this->builder()->installScript('web-1.org-1', 'test-enrollment-token', CertificateAuthority::create('org-1 CA')->certificatePem());
+        $start = strpos($script, "STATE=/var/lib/cloud-manager\n");
+        $end = strpos($script, "trap 'rc=");
+        $this->assertNotFalse($start);
+        $this->assertNotFalse($end);
+        $block = substr($script, $start, strpos($script, "\n", $end) - $start);
+
+        $root = sys_get_temp_dir().'/cm-install-'.getmypid().'-'.bin2hex(random_bytes(3));
+        mkdir($root, 0o755, true);
+        foreach ($files as $path => $contents) {
+            @mkdir(dirname("$root/$path"), 0o755, true);
+            file_put_contents("$root/$path", $contents);
+        }
+        // The same block, pointed at the sandbox instead of the real server.
+        $block = str_replace(
+            ['STATE=/var/lib/cloud-manager', 'BIN=/usr/local/bin/cloud-manager-agent', 'UNIT=/etc/systemd/system/cloud-manager-agent.service'],
+            ["STATE=$root/var/lib/cloud-manager", "BIN=$root/usr/local/bin/cloud-manager-agent", "UNIT=$root/etc/systemd/system/cloud-manager-agent.service"],
+            $block,
+        );
+        $harness = "set -euo pipefail\nsay() { printf '%s\\n' \"\$*\"; }\ndie() { printf '%s\\n' \"\$*\"; exit 1; }\n$block\n$then\n";
+        file_put_contents("$root/harness.sh", $harness);
+        $process = new Process(['bash', "$root/harness.sh"], null, $env);
+        $process->run();
+
+        $left = [];
+        $found = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS));
+        foreach ($found as $file) {
+            $relative = substr($file->getPathname(), strlen($root) + 1);
+            if ($relative !== 'harness.sh') {
+                $left[] = $relative;
+            }
+        }
+        exec('rm -rf '.escapeshellarg($root));
+        sort($left);
+
+        return ['output' => $process->getOutput().$process->getErrorOutput(), 'code' => $process->getExitCode(), 'left' => $left];
+    }
+
+    public function test_the_install_script_clears_what_an_unfinished_run_left_and_says_so(): void
+    {
+        $half = [
+            'var/lib/cloud-manager/ca.crt' => 'old ca',
+            'var/lib/cloud-manager/enroll.token' => 'spent',
+            'usr/local/bin/cloud-manager-agent.new' => 'half a download',
+            'usr/local/bin/cloud-manager-agent' => 'binary',
+            'etc/systemd/system/cloud-manager-agent.service' => 'unit',
+        ];
+
+        $run = $this->runInstallPrelude($half);
+
+        $this->assertSame(0, $run['code'], $run['output']);
+        $this->assertStringContainsString('Cleaning up an earlier run that did not finish', $run['output']);
+        $this->assertSame([], $run['left'], 'Nothing of the earlier run is left.');
+    }
+
+    public function test_a_clean_server_is_left_alone_and_nothing_is_announced(): void
+    {
+        $run = $this->runInstallPrelude([]);
+
+        $this->assertSame(0, $run['code'], $run['output']);
+        $this->assertStringNotContainsString('Cleaning up', $run['output']);
+    }
+
+    public function test_an_enrolled_server_keeps_its_identity_unless_it_is_told_to_give_it_up(): void
+    {
+        $enrolled = ['var/lib/cloud-manager/node.json' => '{}', 'var/lib/cloud-manager/ca.crt' => 'ca', 'etc/systemd/system/cloud-manager-agent.service' => 'unit'];
+
+        $kept = $this->runInstallPrelude($enrolled);
+        $this->assertSame(1, $kept['code']);
+        $this->assertStringContainsString('already enrolled', $kept['output']);
+        $this->assertStringContainsString('CM_REENROLL=1', $kept['output']);
+        $this->assertCount(3, $kept['left'], 'Nothing is removed from an enrolled server without being asked.');
+
+        $forced = $this->runInstallPrelude($enrolled, ['CM_REENROLL' => '1']);
+        $this->assertSame(0, $forced['code'], $forced['output']);
+        $this->assertStringContainsString('Removing the earlier enrolment', $forced['output']);
+        $this->assertSame([], $forced['left']);
+    }
+
+    public function test_a_run_that_stops_before_the_agent_starts_removes_what_it_wrote_and_one_that_got_further_does_not(): void
+    {
+        $failed = $this->runInstallPrelude([], then: 'mkdir -p "$STATE" && echo token > "$STATE/enroll.token" && : > "$BIN.new"; exit 1');
+        $this->assertSame(1, $failed['code']);
+        $this->assertStringContainsString('Stopped before it finished', $failed['output']);
+        $this->assertSame([], $failed['left'], 'The single-use token does not stay on disk after a failure.');
+
+        $started = $this->runInstallPrelude([], then: 'mkdir -p "$STATE" && echo token > "$STATE/enroll.token"; started=1; exit 1');
+        $this->assertSame(['var/lib/cloud-manager/enroll.token'], $started['left'], 'Once the service is started, the agent owns its files.');
+
+        $succeeded = $this->runInstallPrelude([], then: 'mkdir -p "$STATE" && echo ok > "$STATE/ca.crt"');
+        $this->assertSame(['var/lib/cloud-manager/ca.crt'], $succeeded['left']);
     }
 }

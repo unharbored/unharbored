@@ -121,7 +121,7 @@ final class OperationController extends Controller
             'kind' => $op->kind,
             'status' => $op->status,
             'running' => $running,
-            'retryable' => $op->kind === 'app_create' && $op->status === 'failed',
+            'retryable' => ($op->kind === 'app_create' || ($op->kind === 'database_create' && ($meta['provider'] ?? 'digitalocean') !== 'digitalocean')) && $op->status === 'failed',
             'retryServer' => $op->kind === 'app_create' && $op->status === 'failed' ? $this->serverChoice($op, $meta) : null,
             'badge' => Present::badge($op),
             'elapsed' => Present::duration($op->started_at ?? $op->created_at, $op->finished_at),

@@ -68,8 +68,10 @@ final class LocalServices
         self::label($service);
 
         $steps = match ($service) {
-            // The PGDG repository is configured by the stack, which is also where pg_dump comes from.
+            // Ubuntu ships an older PostgreSQL, so the package comes from PostgreSQL's own repository. A server made only
+            // to run a database never had the stack, which is the other place that adds it.
             'pgsql' => [
+                ServerStack::pgdgRepositoryStep(),
                 ['id' => 'pkg-postgresql', 'type' => 'package', 'name' => 'postgresql-'.ServerStack::PG_CLIENT],
                 ['id' => 'svc-postgresql', 'type' => 'service', 'name' => 'postgresql', 'state' => 'running'],
             ],
@@ -159,7 +161,7 @@ final class LocalServices
             $log('db', "database and user {$name} created on ".self::label($service));
             $this->sites->setInjected($site, [
                 'DB_CONNECTION' => $info['connection'], 'DB_HOST' => '127.0.0.1', 'DB_PORT' => (string) $info['port'],
-                'DB_DATABASE' => $name, 'DB_USERNAME' => $name, 'DB_PASSWORD' => $password, 'DB_SSLMODE' => null, 'MYSQL_ATTR_SSL_CA' => null,
+                'DB_DATABASE' => $name, 'DB_USERNAME' => $name, 'DB_PASSWORD' => $password, 'DB_SSLMODE' => null, 'PGSSLROOTCERT' => null, 'MYSQL_ATTR_SSL_CA' => null,
             ], self::label($service).' on this server');
             DB::table('sites')->where('id', $site->id)->update(['database_mode' => "local:{$service}", 'updated_at' => now()]);
             $done = ['.env points at the database on this server; deploy to switch'];
@@ -211,9 +213,9 @@ final class LocalServices
     }
 
     /** Drops a database and its user on the node: the reverse of grantOnNode. */
-    public function dropOnNode(string $organizationId, string $node, string $service, string $name, string $reason): void
+    public function dropOnNode(string $organizationId, string $node, string $service, string $name, string $reason, array $hosts = []): void
     {
-        $this->runProgram($organizationId, $node, 'local-database-drop', self::dropScript($service, $name), "drop {$name} and its user", $reason, 'Dropping the database failed');
+        $this->runProgram($organizationId, $node, 'local-database-drop', self::dropScript($service, $name, $hosts), "drop {$name} and its user", $reason, 'Dropping the database failed');
     }
 
     /** Runs one PHP program as a 0600 file on the node, removed whatever happens, so a password in it never lingers. */
@@ -224,7 +226,7 @@ final class LocalServices
                 'name' => $recipe,
                 'steps' => [
                     ['id' => 'script', 'type' => 'file', 'path' => self::SCRIPT_PATH, 'mode' => '0600', 'sensitive' => true, 'content_b64' => base64_encode($program)],
-                    ['id' => 'grant', 'type' => 'command', 'name' => ServerStack::PHP_BINARY, 'args' => [self::SCRIPT_PATH], 'description' => $description],
+                    ['id' => 'grant', 'type' => 'command', 'name' => ServerStack::phpBinary(ServerStack::defaultPhpFor($node)), 'args' => [self::SCRIPT_PATH], 'description' => $description],
                     ['id' => 'forget', 'type' => 'absent', 'path' => self::SCRIPT_PATH],
                 ],
             ]], timeoutSeconds: 120, reason: $reason);
@@ -270,6 +272,7 @@ SQL;
         } elseif ($service === 'mysql') {
             $sql = "CREATE DATABASE IF NOT EXISTS `{$name}`;\n"
                 .implode("\n", array_map(fn ($host) => "CREATE USER IF NOT EXISTS '{$name}'@'{$host}' IDENTIFIED BY '{$password}'; ALTER USER '{$name}'@'{$host}' IDENTIFIED BY '{$password}'; GRANT ALL PRIVILEGES ON `{$name}`.* TO '{$name}'@'{$host}';", $hosts))
+                .(in_array('%', $hosts, true) ? '' : "\nDROP USER IF EXISTS '{$name}'@'%';")
                 ."\nFLUSH PRIVILEGES;";
         } else {
             throw new InvalidArgumentException("{$service} has no database to create.");
@@ -278,15 +281,20 @@ SQL;
         return self::program($service, $sql);
     }
 
-    /** The reverse: the database goes, then its user (and, for PostgreSQL, anyone still connected to it). */
-    public static function dropScript(string $service, string $name): string
+    /** The reverse: the database goes, then its user (and, for PostgreSQL, anyone still connected to it). @param list<string> $hosts extra MySQL account hosts to drop */
+    public static function dropScript(string $service, string $name, array $hosts = []): string
     {
+        foreach ($hosts as $host) {
+            if (! preg_match('/^(%|localhost|[0-9.]{7,15})$/', $host)) {
+                throw new InvalidArgumentException("Refusing to drop an account at {$host}.");
+            }
+        }
         if (! preg_match('/^[a-z0-9_]{1,63}$/', $name)) {
             throw new InvalidArgumentException("Refusing to drop a database called {$name}.");
         }
         $sql = match ($service) {
             'pgsql' => "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{$name}';\nDROP DATABASE IF EXISTS \"{$name}\";\nDROP ROLE IF EXISTS \"{$name}\";",
-            'mysql' => "DROP DATABASE IF EXISTS `{$name}`;\nDROP USER IF EXISTS '{$name}'@'%', '{$name}'@'localhost', '{$name}'@'127.0.0.1';",
+            'mysql' => "DROP DATABASE IF EXISTS `{$name}`;\nDROP USER IF EXISTS ".implode(', ', array_map(fn ($h) => "'{$name}'@'{$h}'", array_unique(['%', 'localhost', '127.0.0.1', ...$hosts]))).';',
             default => throw new InvalidArgumentException("{$service} has no database to drop."),
         };
 

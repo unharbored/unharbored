@@ -79,11 +79,13 @@
         min-height: 44px; padding: 0 14px; border: 1px solid var(--line); border-radius: 12px;
         background: var(--panel-raised); color: var(--text-strong); font: 14px var(--body);
     }
-    .field select {
-        appearance: none; -webkit-appearance: none; padding-right: 38px; font: 12px var(--mono); cursor: pointer;
+    /* Every select in the console: one arrow, 14px from the edge, text never under it. */
+    select {
+        appearance: none; -webkit-appearance: none; padding-right: 38px !important; cursor: pointer;
         background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8' fill='none' stroke='%23a9c2b6' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M1 1.5 6 6.5l5-5'/%3E%3C/svg%3E");
         background-repeat: no-repeat; background-position: right 14px center;
     }
+    .field select { font: 12px var(--mono); }
     .field textarea { padding: 12px 14px; font: 13px/1.6 var(--mono); resize: vertical; }
     .field input::placeholder, .field textarea::placeholder { color: var(--faint); }
 }

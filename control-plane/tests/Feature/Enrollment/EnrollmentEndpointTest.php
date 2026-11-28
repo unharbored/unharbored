@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tests\Feature\Enrollment;
 
-use App\Lib\Audit\AuditLog;
 use App\Lib\Enrollment\EnrollmentService;
 use App\Lib\Pki\CertificateAuthority;
 use App\Lib\Vault\KeyManager;
@@ -56,7 +55,7 @@ final class EnrollmentEndpointTest extends TestCase
     {
         $key = EC::createKey('secp256r1');
 
-        $csr = new X509();
+        $csr = new X509;
         $csr->setPrivateKey($key);
         $csr->setDN(['CN' => $cn]);
 
@@ -232,7 +231,7 @@ final class EnrollmentEndpointTest extends TestCase
 
         // The issued certificate must actually chain to the CA we handed back,
         // or the agent pins something that cannot verify it.
-        $cert = new X509();
+        $cert = new X509;
         $cert->loadX509($certPem);
         $cert->loadCA($caPem);
         $this->assertTrue($cert->validateSignature());
@@ -263,7 +262,7 @@ final class EnrollmentEndpointTest extends TestCase
         $this->assertStringContainsString('BEGIN CERTIFICATE', $certPem);
         $this->assertStringContainsString('PRIVATE KEY', $keyPem);
 
-        $cert = new X509();
+        $cert = new X509;
         $cert->loadX509($certPem);
 
         $this->assertSame(['id-kp-serverAuth'], $cert->getExtension('id-ce-extKeyUsage'));
@@ -290,12 +289,66 @@ final class EnrollmentEndpointTest extends TestCase
         [, $csr] = $this->makeCsr();
         $nodePem = $ca->issueNodeCertificate($csr, 'node-1');
 
-        $server = new X509();
+        $server = new X509;
         $server->loadX509($serverPem);
-        $node = new X509();
+        $node = new X509;
         $node->loadX509($nodePem);
 
         $this->assertSame(['id-kp-serverAuth'], $server->getExtension('id-ce-extKeyUsage'));
         $this->assertSame(['id-kp-clientAuth'], $node->getExtension('id-ce-extKeyUsage'));
+    }
+
+    public function test_every_team_s_agents_pin_the_one_ca_that_signed_the_gateways_certificate(): void
+    {
+        DB::table('organizations')->insert(['id' => 'org-2', 'name' => 'Second', 'created_at' => now(), 'updated_at' => now()]);
+        config(['control_plane.server_ca_organization' => 'org-1']);
+        $serverCa = $this->enrollment->certificateAuthorityFor('org-1')->certificatePem();
+        $secondCa = $this->enrollment->certificateAuthorityFor('org-2')->certificatePem();
+        $this->assertNotSame($serverCa, $secondCa);
+
+        [, $csr] = $this->makeCsr();
+        $response = $this->postJson('/api/enroll', ['token' => $this->enrollment->issueToken('org-2', 'node-2'), 'csr_pem' => $csr,
+            'agent_version' => '0.1.0', 'hostname' => 'web-2', 'os' => 'linux', 'arch' => 'amd64'])->assertOk();
+
+        // It pins what verifies the gateway; its own certificate still comes from its own team's CA.
+        $this->assertSame($serverCa, $response->json('ca_pem'));
+        $this->assertSame('org-2', $response->json('org_id'));
+        $issuer = (new X509)->loadX509($response->json('cert_pem'))['tbsCertificate']['issuer']['rdnSequence'][0][0]['value']['utf8String'] ?? null;
+        $this->assertSame('org-2 organisation CA', $issuer);
+        $this->assertSame($serverCa, $this->enrollment->serverTrustFor('org-2'));
+    }
+
+    public function test_with_no_server_ca_organisation_each_team_pins_its_own_ca(): void
+    {
+        config(['control_plane.server_ca_organization' => '']);
+
+        $this->assertSame($this->enrollment->certificateAuthorityFor('org-1')->certificatePem(), $this->enrollment->serverTrustFor('org-1'));
+    }
+    public function test_the_gateway_is_told_about_a_team_when_its_ca_is_first_made_and_not_again(): void
+    {
+        \Illuminate\Support\Facades\Http::fake(['*' => \Illuminate\Support\Facades\Http::response(['organisations' => 2], 200)]);
+        config(['control_plane.gateway_url' => 'http://gw.test', 'control_plane.gateway_token' => 't']);
+        $this->app->forgetInstance(\App\Lib\Gateway\GatewayClient::class);
+        $this->app->forgetInstance(\App\Lib\Gateway\OrganisationSync::class);
+        DB::table('organizations')->insert(['id' => 'org-9', 'name' => 'Ninth', 'created_at' => now(), 'updated_at' => now()]);
+
+        $this->enrollment->certificateAuthorityFor('org-9');
+        $sent = fn () => \Illuminate\Support\Facades\Http::recorded(fn ($request) => str_contains($request->url(), 'gw.test'))->count();
+        $this->assertSame(1, $sent(), 'Made: the gateway is told.');
+
+        $this->enrollment->certificateAuthorityFor('org-9');
+        $this->assertSame(1, $sent(), 'Loaded: nothing to tell.');
+    }
+
+    public function test_a_gateway_that_cannot_be_reached_does_not_stop_a_ca_being_made(): void
+    {
+        \Illuminate\Support\Facades\Http::fake(['*' => \Illuminate\Support\Facades\Http::response('down', 503)]);
+        config(['control_plane.gateway_url' => 'http://gw.test', 'control_plane.gateway_token' => 't']);
+        $this->app->forgetInstance(\App\Lib\Gateway\GatewayClient::class);
+        $this->app->forgetInstance(\App\Lib\Gateway\OrganisationSync::class);
+        DB::table('organizations')->insert(['id' => 'org-8', 'name' => 'Eighth', 'created_at' => now(), 'updated_at' => now()]);
+
+        $this->assertNotEmpty($this->enrollment->certificateAuthorityFor('org-8')->certificatePem());
+        $this->assertTrue(DB::table('organization_certificate_authorities')->where('organization_id', 'org-8')->exists());
     }
 }

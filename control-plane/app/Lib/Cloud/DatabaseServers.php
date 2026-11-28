@@ -13,6 +13,8 @@ use App\Lib\Resources\ResourceRecord;
 use App\Lib\Resources\ResourceState;
 use App\Lib\Servers\Firewall;
 use App\Lib\Servers\LocalServices;
+use App\Lib\Servers\NodeRemoval;
+use App\Lib\Servers\ServerInstall;
 use App\Lib\Servers\ServerStack;
 use App\Lib\Sites\Sites;
 use Closure;
@@ -65,6 +67,12 @@ final class DatabaseServers
         return ($cluster->attributes['mode'] ?? null) === 'self_run';
     }
 
+    /** A database on a machine the person already has: Unharbored did not create the server and will not destroy it. */
+    public static function isOwnServer(ResourceRecord $cluster): bool
+    {
+        return ($cluster->attributes['own_server'] ?? false) === true;
+    }
+
     public static function serverSlug(string $clusterSlug): string
     {
         return "db-{$clusterSlug}";
@@ -73,6 +81,47 @@ final class DatabaseServers
     public function nodeId(string $organizationId, string $clusterSlug): string
     {
         return $this->provisioner->nodeId($organizationId, self::serverSlug($clusterSlug));
+    }
+
+    /**
+     * A database on a server the person already has, which should have nothing else on it. Declares the cluster and gives
+     * back the one-time install command to run on that machine; the operation it starts waits for the agent to connect and
+     * then sets the engine up, as it does on a server a provider made. The server is not created or destroyed by us.
+     *
+     * @param  ?string  $address  the address applications will reach it on, when it is not the one it connects from (behind NAT, say)
+     * @return array{command: string, operation: int, expires_at: string}
+     */
+    public function createOnOwnServer(string $organizationId, string $slug, string $engine, ?string $address, string $baseUrl, string $actor): array
+    {
+        if (! preg_match('/^[a-z0-9][a-z0-9-]{0,30}$/', $slug)) {
+            throw new InvalidArgumentException('Name a cluster with lowercase letters, digits and dashes.');
+        }
+        if (! isset(self::ENGINES[$engine])) {
+            throw new InvalidArgumentException('A server can run '.implode(' or ', self::ENGINES).' so far; pick one of those.');
+        }
+        if ($address !== null && $address !== '' && filter_var($address, FILTER_VALIDATE_IP) === false) {
+            throw new InvalidArgumentException('The address must be an IP address, such as 203.0.113.9.');
+        }
+
+        $system = Actor::system('control-plane');
+        $cluster = $this->resources->declare($organizationId, 'database_cluster', $slug, [
+            'engine' => $engine, 'mode' => 'self_run', 'own_server' => true, 'server' => self::serverSlug($slug), 'admitted' => [],
+        ] + ($address ? ['address' => $address] : []), provider: 'custom');
+        if ($cluster->state === ResourceState::Deleted) {
+            throw new InvalidArgumentException("{$slug} was the name of a destroyed cluster. Choose another name.");
+        }
+        if ($cluster->state !== ResourceState::Pending && $cluster->state !== ResourceState::Failed) {
+            throw new InvalidArgumentException("There is already a cluster called {$slug}.");
+        }
+        $cluster = $this->resources->transition($cluster, ResourceState::Provisioning, reason: "Waiting for your server for {$slug}", actor: $system);
+
+        try {
+            return app(ServerInstall::class)->issue($organizationId, self::serverSlug($slug), $baseUrl, $actor, ['database' => ['cluster' => $slug, 'engine' => $engine]]);
+        } catch (Throwable $e) {
+            $this->resources->transition($cluster, ResourceState::Failed, reason: 'The install command could not be made', error: $e->getMessage(), actor: $system);
+
+            throw $e;
+        }
     }
 
     /**
@@ -129,8 +178,16 @@ final class DatabaseServers
         $engine = (string) $cluster->attributes['engine'];
         $service = self::SERVICE[$engine];
         $node = $this->nodeId($org, $cluster->slug);
-        $server = $this->resources->find($org, 'server', self::serverSlug($cluster->slug)) ?? throw new RuntimeException('The database server record is gone.');
-        $address = ProviderServer::publicAddress($server->attributes) ?? throw new RuntimeException('The database server has no public address yet.');
+        if (self::isOwnServer($cluster)) {
+            $address = $this->ownAddress($cluster, $node, $log);
+            if (($cluster->attributes['fresh_checked'] ?? false) !== true) {
+                $this->assertNothingElseRuns($org, $node);
+                $cluster = $this->resources->mergeAttributes($cluster, ['fresh_checked' => true]);
+            }
+        } else {
+            $server = $this->resources->find($org, 'server', self::serverSlug($cluster->slug)) ?? throw new RuntimeException('The database server record is gone.');
+            $address = ProviderServer::publicAddress($server->attributes) ?? throw new RuntimeException('The database server has no public address yet.');
+        }
 
         [$certificate, $key] = self::certificateFor($address);
         $steps = [
@@ -182,7 +239,7 @@ final class DatabaseServers
         // A fresh password every attach: re-attaching is also how a site's database password is rotated.
         $password = bin2hex(random_bytes(16));
         $this->local->grantOnNode($site->organization_id, $this->nodeId($site->organization_id, $cluster->slug), $service, $name, $password,
-            "Grant {$site->name} its database on {$cluster->slug}", ['%']);
+            "Grant {$site->name} its database on {$cluster->slug}", $this->accountHosts($site, (string) $site->node_id));
         $done[] = "user {$name} owns database {$name}";
 
         $this->sites->setInjected($site, [
@@ -192,7 +249,10 @@ final class DatabaseServers
             'DB_DATABASE' => $name,
             'DB_USERNAME' => $name,
             'DB_PASSWORD' => $password,
-            'DB_SSLMODE' => $engine === 'pg' ? 'require' : null,
+            // The server's own certificate is the only one trusted: Postgres checks it (and that it was made for this address)
+            // through libpq's root certificate setting, MySQL through the CA its driver is given.
+            'DB_SSLMODE' => $engine === 'pg' ? 'verify-full' : null,
+            'PGSSLROOTCERT' => $engine === 'pg' ? Sites::root($site).'/shared/database-ca.crt' : null,
             'MYSQL_ATTR_SSL_CA' => $engine === 'mysql' ? Sites::root($site).'/shared/database-ca.crt' : null,
         ], "Database cluster {$cluster->slug}");
         DB::table('sites')->where('id', $site->id)->update(['database_cluster_id' => $cluster->id, 'database_mode' => 'cluster', 'updated_at' => now()]);
@@ -204,6 +264,85 @@ final class DatabaseServers
             resourceId: "{$site->node_id}/{$site->name}", metadata: ['cluster' => $cluster->slug, 'database' => $name]);
 
         return $done;
+    }
+
+    /**
+     * Where the site's database account may log in from. MySQL accounts carry a host, so the account is tied to the one
+     * server the site runs on: a leaked password is useless anywhere else. (Postgres ignores this; pg_hba does it.) An
+     * address that is not IPv4 falls back to any host, behind the firewall. Dropping also covers the old any-host account.
+     *
+     * @return list<string>
+     */
+    private function accountHosts(stdClass $site, string $nodeId, bool $forDrop = false): array
+    {
+        try {
+            $address = $this->addressOf($site->organization_id, $nodeId);
+        } catch (InvalidArgumentException) {
+            return $forDrop ? [] : ['%'];
+        }
+
+        return filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false ? [$address] : ($forDrop ? [] : ['%']);
+    }
+
+    /**
+     * Makes a new certificate for the server's address and puts it on the server, for when its address changed or the
+     * certificate is old. The address is the provider's current one; on your own server it is the one given, else the one
+     * on record. The engine restarts (a few seconds), then every attached site is given the new certificate to pin. Sites
+     * keep the old address in their .env until they are deployed, so a changed address says so.
+     *
+     * @param  Closure(string, string): void  $log
+     */
+    public function reissue(ResourceRecord $cluster, ?string $address, Closure $log): ResourceRecord
+    {
+        if ($cluster->state !== ResourceState::Active || ($cluster->attributes['mode'] ?? null) !== 'self_run') {
+            throw new RuntimeException('Only a running database server can get a new certificate.');
+        }
+        $org = $cluster->organizationId;
+        $engine = (string) $cluster->attributes['engine'];
+        $node = $this->nodeId($org, $cluster->slug);
+        if (self::isOwnServer($cluster)) {
+            $address ??= (string) ($cluster->attributes['host'] ?? '');
+        } else {
+            $server = $this->resources->find($org, 'server', self::serverSlug($cluster->slug)) ?? throw new RuntimeException('The database server record is gone.');
+            $address = ProviderServer::publicAddress($server->attributes) ?? throw new RuntimeException('The database server has no public address.');
+        }
+        if (filter_var($address, FILTER_VALIDATE_IP) === false) {
+            throw new RuntimeException('Give the address the server has now.');
+        }
+
+        [$certificate, $key] = self::certificateFor($address);
+        try {
+            $result = $this->gateway->run($org, $node, 'apply_recipe', ['spec' => ['name' => 'database-server-certificate', 'steps' => [
+                ['id' => 'tls-key', 'type' => 'file', 'path' => self::KEY_FILE, 'mode' => '0600', 'sensitive' => true, 'content_b64' => base64_encode($key)],
+                ['id' => 'tls-cert', 'type' => 'file', 'path' => self::CERT_FILE, 'mode' => '0644', 'content_b64' => base64_encode($certificate)],
+                ['id' => 'listen', 'type' => 'command', 'name' => 'sh', 'args' => ['-c', self::listenScript($engine)], 'description' => self::ENGINES[$engine].' uses the new certificate'],
+                ['id' => 'tls-forget', 'type' => 'absent', 'path' => self::KEY_FILE],
+            ]]], timeoutSeconds: 120, reason: "New certificate for database cluster {$cluster->slug}");
+        } finally {
+            try {
+                $this->gateway->run($org, $node, 'apply_recipe', ['spec' => ['name' => 'database-server-cleanup', 'steps' => [['id' => 'forget', 'type' => 'absent', 'path' => self::KEY_FILE]]]], timeoutSeconds: 30);
+            } catch (Throwable) {
+            }
+        }
+        if (($result['status'] ?? null) !== 'succeeded') {
+            throw new RuntimeException('The new certificate was not installed: '.mb_substr(trim((string) ($result['error'] ?? 'no detail')), 0, 600));
+        }
+        $changed = $address !== ($cluster->attributes['host'] ?? null);
+        $cluster = $this->resources->mergeAttributes($cluster, ['host' => $address, 'ca_pem' => $certificate]);
+        $log('certificate', "new certificate for {$address}".($changed ? ' (the address changed)' : ''));
+        $this->applyFirewall($cluster);
+
+        foreach (DB::table('sites')->where('database_cluster_id', $cluster->id)->get() as $site) {
+            $this->gateway->run($org, (string) $site->node_id, 'apply_recipe', ['spec' => ['name' => 'database-ca', 'steps' => [
+                ['id' => 'database-ca', 'type' => 'file', 'path' => Sites::root($site).'/shared/database-ca.crt', 'content_b64' => base64_encode($certificate), 'mode' => '0644'],
+            ]]], timeoutSeconds: 60, reason: "New certificate for {$site->name}'s database");
+            if ($changed) {
+                $this->sites->setInjected($site, ['DB_HOST' => $address], "Database cluster {$cluster->slug}");
+            }
+            $log('site', "{$site->name} trusts the new certificate".($changed ? '; deploy it to use the new address' : ''));
+        }
+
+        return $cluster;
     }
 
     /** Lets a server reach the cluster. The same rule twice changes nothing. */
@@ -250,7 +389,7 @@ final class DatabaseServers
         $this->admitServer($site, (string) $site->node_id, $cluster);
         try {
             $this->local->grantOnNode($site->organization_id, $this->nodeId($site->organization_id, $cluster->slug), self::SERVICE[$engine], $name, $password,
-                "Create database {$name} on {$cluster->slug}", ['%']);
+                "Create database {$name} on {$cluster->slug}", $this->accountHosts($site, (string) $site->node_id));
         } catch (Throwable $e) {
             $this->discardDatabase($site, $cluster, $name);
 
@@ -266,7 +405,7 @@ final class DatabaseServers
     {
         try {
             $this->local->dropOnNode($site->organization_id, $this->nodeId($site->organization_id, $cluster->slug),
-                self::SERVICE[(string) $cluster->attributes['engine']], $name, "Remove database {$name} from {$cluster->slug}");
+                self::SERVICE[(string) $cluster->attributes['engine']], $name, "Remove database {$name} from {$cluster->slug}", $this->accountHosts($site, (string) $site->node_id, forDrop: true));
         } catch (Throwable) {
         }
     }
@@ -276,7 +415,7 @@ final class DatabaseServers
     {
         $name = str_replace('-', '_', (string) $site->name);
         $this->local->dropOnNode($site->organization_id, $this->nodeId($site->organization_id, $cluster->slug),
-            self::SERVICE[(string) $cluster->attributes['engine']], $name, "Drop {$site->name}'s database");
+            self::SERVICE[(string) $cluster->attributes['engine']], $name, "Drop {$site->name}'s database", $this->accountHosts($site, (string) $site->node_id, forDrop: true));
 
         return ["user {$name} dropped", "database {$name} dropped"];
     }
@@ -289,9 +428,17 @@ final class DatabaseServers
             throw new InvalidArgumentException("{$cluster->slug} is used by ".implode(', ', $users).'. Detach them first.');
         }
         $actor = Actor::system('control-plane');
-        $server = $this->resources->find($cluster->organizationId, 'server', self::serverSlug($cluster->slug));
-        if ($server !== null && ! in_array($server->state, [ResourceState::Deleted, ResourceState::Deleting], true)) {
-            $this->provisioner->destroy($server, $actor);
+        if (self::isOwnServer($cluster)) {
+            // The machine is theirs: only Unharbored's agent and certificate go. The engine and its data stay on it.
+            $node = $this->nodeId($cluster->organizationId, $cluster->slug);
+            if (DB::table('nodes')->where('node_id', $node)->exists()) {
+                app(NodeRemoval::class)->remove($node, 'control-plane');
+            }
+        } else {
+            $server = $this->resources->find($cluster->organizationId, 'server', self::serverSlug($cluster->slug));
+            if ($server !== null && ! in_array($server->state, [ResourceState::Deleted, ResourceState::Deleting], true)) {
+                $this->provisioner->destroy($server, $actor);
+            }
         }
         $cluster = $this->resources->transition($cluster, ResourceState::Deleting, reason: 'Destroy requested', actor: $actor);
         $this->resources->transition($cluster, ResourceState::Deleted, reason: 'Destroyed', actor: $actor);
@@ -309,24 +456,85 @@ final class DatabaseServers
         if ($org === null) {
             return null;
         }
-        $server = DB::table('resources')->where('organization_id', $org)->where('type', 'server')->where('slug', strstr($nodeId, '.', true) ?: $nodeId)->value('attributes');
-        $slug = $server === null ? null : ((json_decode((string) $server, true) ?: [])['database_cluster'] ?? null);
-        if ($slug === null) {
-            return null;
-        }
-        $cluster = DB::table('resources')->where('organization_id', $org)->where('type', 'database_cluster')->where('slug', $slug)->where('state', '!=', 'deleted')->value('attributes');
-        $a = $cluster === null ? [] : (json_decode((string) $cluster, true) ?: []);
-        if (! isset(self::PORT[$a['engine'] ?? ''])) {
-            return null;
+        $server = strstr($nodeId, '.', true) ?: $nodeId;
+        foreach (DB::table('resources')->where('organization_id', $org)->where('type', 'database_cluster')->where('state', '!=', 'deleted')->pluck('attributes') as $json) {
+            $a = json_decode((string) $json, true) ?: [];
+            if (($a['server'] ?? null) === $server && isset(self::PORT[$a['engine'] ?? ''])) {
+                return ['port' => self::PORT[$a['engine']], 'sources' => array_values((array) ($a['admitted'] ?? []))];
+            }
         }
 
-        return ['port' => self::PORT[$a['engine']], 'sources' => array_values((array) ($a['admitted'] ?? []))];
+        return null;
+    }
+
+    /**
+     * Postgres's own list of who may connect, kept equal to the firewall's: one line for each admitted address and
+     * nothing else, so the firewall is not the only thing between the internet and the engine's port. MySQL has no
+     * such list; its accounts may connect from anywhere (the firewall, TLS and each site's own password are its locks).
+     *
+     * @param  array<int, string>  $admitted
+     * @return array<string, mixed>|null
+     */
+    public static function hbaStep(string $engine, array $admitted): ?array
+    {
+        if ($engine !== 'pg') {
+            return null;
+        }
+        $file = '/etc/postgresql/'.ServerStack::PG_CLIENT.'/main/pg_hba.conf';
+        $lines = '';
+        foreach ($admitted as $address) {
+            if (filter_var($address, FILTER_VALIDATE_IP) === false) {
+                continue;
+            }
+            $lines .= 'printf "%s\\n" '.escapeshellarg('hostssl all all '.$address.(filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) ? '/128' : '/32').' scram-sha-256').' >> '.escapeshellarg($file)."\n";
+        }
+
+        return ['id' => 'pg-hba', 'type' => 'command', 'name' => 'sh', 'args' => ['-c', "set -e\nsed -i '/^# cm-remote/,\$d' ".escapeshellarg($file)."\nprintf '# cm-remote\\n' >> ".escapeshellarg($file)."\n{$lines}systemctl reload postgresql"],
+            'description' => 'Postgres lets in only the admitted addresses'];
+    }
+
+    /**
+     * The address applications reach an own server on: the one given, else the one it connected from. A private address
+     * only works for servers on the same network, which is said, not refused.
+     *
+     * @param  Closure(string, string): void  $log
+     */
+    private function ownAddress(ResourceRecord $cluster, string $node, Closure $log): string
+    {
+        $address = ($cluster->attributes['address'] ?? null) ?: DB::table('enrollment_grants')->where('node_id', $node)->whereNotNull('consumed_by_ip')->orderByDesc('id')->value('consumed_by_ip');
+        if ($address === null || filter_var($address, FILTER_VALIDATE_IP) === false) {
+            throw new RuntimeException("Unharbored could not tell which address {$node} is reached on. Make the cluster again and give the address.");
+        }
+        if (filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) === false) {
+            $log('address', "{$address} is a private address: only servers on the same network can reach this database");
+        } elseif (($cluster->attributes['address'] ?? null) === null) {
+            $log('address', "applications will connect to {$address}, the address it connected from. If it is behind NAT, that is the router's address: make the cluster again and give the address it is reached on");
+        }
+
+        return (string) $address;
+    }
+
+    /** A database server has nothing else on it. Refuses a machine that already serves websites or holds a database. */
+    private function assertNothingElseRuns(string $organizationId, string $node): void
+    {
+        $script = "dpkg-query -W -f='\${db:Status-Status} \${Package}\n' 'nginx*' 'apache2*' 'mysql-server*' 'mariadb-server*' 'postgresql*' 'redis-server*' 'php*-fpm' 'docker.io' 'containerd*' 2>/dev/null | sed -n 's/^installed //p'; "
+            ."ss -ltnH 2>/dev/null | awk '{print \$4}' | sed -n 's/.*:\\(80\\|443\\|3306\\|5432\\)\$/port \\1/p'; true";
+        $out = trim((string) ($this->gateway->run($organizationId, $node, 'exec', ['name' => 'sh', 'args' => ['-c', $script], 'timeout_seconds' => 60],
+            reason: 'Check that the server has nothing else on it')['detail']['output'] ?? ''));
+        if ($out !== '') {
+            $found = implode(', ', array_slice(array_values(array_unique(preg_split('/\R/', $out))), 0, 6));
+            throw new RuntimeException("This server already runs something else ({$found}). A database server should have nothing else on it: use a freshly installed Ubuntu server.");
+        }
     }
 
     private function applyFirewall(ResourceRecord $cluster): void
     {
         $node = $this->nodeId($cluster->organizationId, $cluster->slug);
-        $result = $this->gateway->run($cluster->organizationId, $node, 'apply_recipe', ['spec' => Firewall::recipe(Firewall::settings($node))], timeoutSeconds: 300,
+        $spec = Firewall::recipe(Firewall::settings($node));
+        if (($pin = self::hbaStep((string) $cluster->attributes['engine'], (array) ($cluster->attributes['admitted'] ?? []))) !== null) {
+            $spec['steps'][] = $pin;
+        }
+        $result = $this->gateway->run($cluster->organizationId, $node, 'apply_recipe', ['spec' => $spec], timeoutSeconds: 300,
             reason: "Update who may reach database cluster {$cluster->slug}");
         if (($result['status'] ?? null) !== 'succeeded') {
             throw new RuntimeException('Updating the database server firewall failed: '.mb_substr((string) ($result['error'] ?? 'no detail'), 0, 600));
@@ -364,7 +572,7 @@ install -d -o postgres -g postgres -m 0750 \$d/ssl
 install -o postgres -g postgres -m 0600 {$key} \$d/ssl/server.key
 install -o postgres -g postgres -m 0644 {$crt} \$d/ssl/server.crt
 printf "listen_addresses = '*'\\nssl = on\\nssl_cert_file = '%s'\\nssl_key_file = '%s'\\npassword_encryption = scram-sha-256\\n" "\$d/ssl/server.crt" "\$d/ssl/server.key" > \$d/main/conf.d/cm-remote.conf
-grep -q '^# cm-remote' \$d/main/pg_hba.conf || printf '# cm-remote\\nhostssl all all 0.0.0.0/0 scram-sha-256\\nhostssl all all ::/0 scram-sha-256\\n' >> \$d/main/pg_hba.conf
+grep -q '^# cm-remote' \$d/main/pg_hba.conf || printf '# cm-remote\\n' >> \$d/main/pg_hba.conf
 systemctl restart postgresql
 SH
             : <<<SH

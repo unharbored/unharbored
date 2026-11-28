@@ -40,12 +40,13 @@ final class Projects
         return null;
     }
 
-    /** The organisation's applications (and previews), narrowed by the current project filter. */
-    public static function sites(): Builder
+    /** The organisation's managed applications (and previews), narrowed by the current project filter; $archived gives the archived ones instead. */
+    public static function sites(bool $archived = false): Builder
     {
         $visible = self::visible();
 
         return DB::table('sites')->where('sites.organization_id', Org::id())
+            ->when($archived, fn ($q) => $q->whereNotNull('sites.archived_at'), fn ($q) => $q->whereNull('sites.archived_at'))
             ->when(self::current() !== null, fn ($q) => $q->where('sites.project_id', self::current()))
             ->when($visible !== null, fn ($q) => $q->whereIn('sites.project_id', $visible));
     }
@@ -113,7 +114,7 @@ final class Projects
     public static function listing(string $organizationId): array
     {
         self::ensureDefault($organizationId);
-        $counts = DB::table('sites')->where('organization_id', $organizationId)->whereNull('parent_site_id')->selectRaw('project_id, count(*) as n')->groupBy('project_id')->pluck('n', 'project_id');
+        $counts = DB::table('sites')->where('organization_id', $organizationId)->whereNull('archived_at')->whereNull('parent_site_id')->selectRaw('project_id, count(*) as n')->groupBy('project_id')->pluck('n', 'project_id');
 
         return DB::table('projects')->where('organization_id', $organizationId)->orderByRaw("slug = 'default' desc")->orderBy('name')->get()
             ->map(fn ($p) => ['id' => (int) $p->id, 'name' => $p->name, 'slug' => $p->slug, 'applications' => (int) ($counts[$p->id] ?? 0)])->all();

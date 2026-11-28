@@ -89,6 +89,17 @@ final class AlertsTest extends TestCase
         $this->assertStringStartsWith('✓ Cleared: web-2 is offline', $this->posted[1]);
     }
 
+    public function test_an_archived_server_raises_no_alerts(): void
+    {
+        $this->connected = ['web-1.org-1'];
+        $this->sample('web-2.org-1', 10, diskFree: 5);
+        DB::table('nodes')->where('node_id', 'web-2.org-1')->update(['archived_at' => now()]);
+
+        $this->travel(5)->minutes();
+
+        $this->assertSame([], $this->check(), 'Neither offline nor a full disk.');
+    }
+
     public function test_a_full_disk_and_a_pinned_cpu_alert(): void
     {
         $this->sample('web-1.org-1', 10, diskFree: 5);

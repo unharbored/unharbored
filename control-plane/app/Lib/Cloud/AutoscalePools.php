@@ -10,9 +10,11 @@ use App\Lib\DigitalOcean\Client;
 use App\Lib\DigitalOcean\Exceptions\RequestFailed;
 use App\Lib\Enrollment\EnrollmentService;
 use App\Lib\Operations\OperationRunner;
+use App\Lib\Providers\ProviderScope;
 use App\Lib\Resources\ResourceManager;
 use App\Lib\Resources\ResourceRecord;
 use App\Lib\Resources\ResourceState;
+use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 use RuntimeException;
@@ -51,7 +53,7 @@ final class AutoscalePools
      */
     public function create(stdClass $site, array $spec): ResourceRecord
     {
-        \App\Lib\Providers\ProviderScope::assertDigitalOcean($site, 'Autoscale pools');
+        ProviderScope::assertDigitalOcean($site, 'Autoscale pools');
         // The balancer spreads traffic to new members, the bucket carries each
         // build to them, and every member must see the same data.
         foreach (['load_balancer_id' => 'a load balancer', 'bucket_id' => 'a Spaces bucket (new servers fetch each build from it)', 'database_cluster_id' => 'a managed database'] as $column => $what) {
@@ -88,7 +90,7 @@ final class AutoscalePools
                     'user_data' => $this->cloudInit->build(
                         nodeId: "pool:{$slug}",
                         enrollmentToken: $token,
-                        caCertificatePem: $this->enrollment->certificateAuthorityFor($site->organization_id)->certificatePem(),
+                        caCertificatePem: $this->enrollment->serverTrustFor($site->organization_id),
                         hostname: null,
                     ),
                     // Scaling on CPU reads DigitalOcean's own agent.
@@ -184,7 +186,7 @@ final class AutoscalePools
      */
     public static function minAt(array $attributes, \DateTimeInterface $now): int
     {
-        $now = \Carbon\CarbonImmutable::instance($now)->utc();
+        $now = CarbonImmutable::instance($now)->utc();
         $hour = $now->hour;
         $today = $now->dayOfWeek;
         $open = [];

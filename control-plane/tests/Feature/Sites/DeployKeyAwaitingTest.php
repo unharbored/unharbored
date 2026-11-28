@@ -133,15 +133,47 @@ final class DeployKeyAwaitingTest extends TestCase
         $this->assertSame('/home/deploy/shop/composer/auth.json', $steps['composer-auth']['path']);
         $this->assertSame('0600', $steps['composer-auth']['mode']);
         $this->assertSame(json_decode($auth, true), json_decode(base64_decode($steps['composer-auth']['content_b64']), true));
-        $this->get("/site/settings?site={$site->id}&tab=build")->assertInertia(fn (Assert $p) => $p->where('data.composerAuth', ['gitlab-token: gitlab.com']));
+        $this->get("/site/settings?site={$site->id}&tab=build")->assertInertia(fn (Assert $p) => $p->where('data.composerAuth', [['type' => 'gitlab-token', 'host' => 'gitlab.com', 'username' => '']]));
         $this->assertStringNotContainsString('glpat-secret-value', $this->get("/site/settings?site={$site->id}&tab=build")->getContent());
 
         $args = $this->app->make(\App\Lib\Sites\Deployer::class)->buildRecipe('/r', composerHome: Sites::composerHome($row))['steps'][0]['args'];
-        $this->assertSame(['-u', 'deploy', '--', 'env', 'COMPOSER_HOME=/home/deploy/shop/composer'], array_slice($args, 0, 5));
+        $this->assertSame(['-u', 'deploy', '--', 'env', 'COMPOSER_IGNORE_PLATFORM_REQS=php+', 'COMPOSER_HOME=/home/deploy/shop/composer'], array_slice($args, 0, 6));
         $this->assertStringNotContainsString('glpat', implode(' ', $args));
 
         $this->post("/site/settings/{$site->id}/composer-auth", ['auth' => ''])->assertSessionHasNoErrors();
         $this->assertSame('absent', collect($sites->setupRecipe(DB::table('sites')->find($site->id))['steps'])->firstWhere('id', 'composer-auth')['type']);
+    }
+
+    public function test_one_composer_host_can_be_added_replaced_and_removed_leaving_the_others(): void
+    {
+        [$site] = $this->creating('deploy');
+        DB::table('sites')->where('id', $site->id)->update(['git_host_key' => 'gitlab.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA']);
+        $url = "/site/settings/{$site->id}";
+        $sites = $this->app->make(Sites::class);
+        $stored = fn () => json_decode(base64_decode(collect($sites->setupRecipe(DB::table('sites')->find($site->id))['steps'])->firstWhere('id', 'composer-auth')['content_b64']), true);
+
+        $this->post("{$url}/composer-host", ['type' => 'http-basic', 'host' => 'Nova.Laravel.com', 'username' => 'me@x.com', 'secret' => 'key-1'])->assertSessionHasNoErrors();
+        $this->post("{$url}/composer-host", ['type' => 'github-oauth', 'host' => 'github.com', 'secret' => 'ghp_token'])->assertSessionHasNoErrors();
+        $this->assertSame(['username' => 'me@x.com', 'password' => 'key-1'], $stored()['http-basic']['nova.laravel.com']);
+        $this->assertSame('ghp_token', $stored()['github-oauth']['github.com']);
+
+        $this->post("{$url}/composer-host", ['type' => 'http-basic', 'host' => 'nova.laravel.com', 'username' => 'new@x.com', 'secret' => 'key-2'])->assertSessionHasNoErrors();
+        $this->assertSame(['username' => 'new@x.com', 'password' => 'key-2'], $stored()['http-basic']['nova.laravel.com']);
+        $this->assertSame('ghp_token', $stored()['github-oauth']['github.com']);
+
+        $page = $this->get("/site/settings?site={$site->id}&tab=build");
+        $page->assertInertia(fn (Assert $p) => $p->where('data.composerAuth', [
+            ['type' => 'http-basic', 'host' => 'nova.laravel.com', 'username' => 'new@x.com'],
+            ['type' => 'github-oauth', 'host' => 'github.com', 'username' => ''],
+        ]));
+        $this->assertStringNotContainsString('key-2', $page->getContent());
+
+        $this->post("{$url}/composer-host-remove", ['type' => 'http-basic', 'host' => 'nova.laravel.com'])->assertSessionHasNoErrors();
+        $this->assertSame(['github-oauth' => ['github.com' => 'ghp_token']], $stored());
+
+        $this->post("{$url}/composer-host", ['type' => 'http-basic', 'host' => 'https://x.com/a', 'username' => 'u', 'secret' => 'p'])->assertSessionHasErrors('composerAuth');
+        $this->post("{$url}/composer-host-remove", ['type' => 'github-oauth', 'host' => 'github.com']);
+        $this->assertFalse($sites->hasComposerAuth(DB::table('sites')->find($site->id)));
     }
 
     public function test_something_that_is_not_an_auth_json_is_refused(): void

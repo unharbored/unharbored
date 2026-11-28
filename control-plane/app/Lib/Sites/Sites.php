@@ -58,6 +58,7 @@ final class Sites
         ?int $projectId = null,
     ): stdClass {
         self::validate($name, $domain, $repository, $branch);
+        \App\Lib\Servers\ServerArchiving::refuseIfNodeArchived($nodeId);
         if ($gitHostKey !== null && ! preg_match('/^\S+ (ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp\d+) [A-Za-z0-9+\/=]+$/', trim($gitHostKey))) {
             throw new InvalidArgumentException('The SSH host key is not a known_hosts line.');
         }
@@ -89,6 +90,8 @@ final class Sites
             'domain' => $domain,
             'repository' => $repository,
             'branch' => $branch,
+            // The default of the server it is made on: 8.4, or 8.5 where Ubuntu has no other.
+            'php_version' => ServerStack::defaultPhpFor($nodeId),
             'deploy_key_public' => $public,
             // A public repository is cloned with no key at all.
             'git_source' => $repository !== null && str_starts_with($repository, 'https://') ? 'https' : 'deploy_key',
@@ -346,7 +349,7 @@ final class Sites
      * variable of one of these names is an override.
      */
     public const INJECTABLE = [
-        'database' => ['DB_CONNECTION', 'DB_HOST', 'DB_PORT', 'DB_DATABASE', 'DB_USERNAME', 'DB_PASSWORD', 'DB_SSLMODE', 'MYSQL_ATTR_SSL_CA'],
+        'database' => ['DB_CONNECTION', 'DB_HOST', 'DB_PORT', 'DB_DATABASE', 'DB_USERNAME', 'DB_PASSWORD', 'DB_SSLMODE', 'PGSSLROOTCERT', 'MYSQL_ATTR_SSL_CA'],
         'cache' => ['REDIS_CLIENT', 'REDIS_HOST', 'REDIS_PORT', 'REDIS_USERNAME', 'REDIS_PASSWORD', 'REDIS_PREFIX', 'CACHE_PREFIX', 'CACHE_STORE', 'SESSION_DRIVER', 'QUEUE_CONNECTION'],
         'storage' => ['FILESYSTEM_DISK', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_DEFAULT_REGION', 'AWS_BUCKET', 'AWS_ENDPOINT', 'AWS_URL', 'AWS_USE_PATH_STYLE_ENDPOINT'],
         'reverb' => ['BROADCAST_CONNECTION', 'REVERB_APP_ID', 'REVERB_APP_KEY', 'REVERB_APP_SECRET', 'REVERB_HOST', 'REVERB_PORT', 'REVERB_SCHEME', 'REVERB_SERVER_HOST', 'REVERB_SERVER_PORT'],
@@ -480,13 +483,14 @@ final class Sites
     }
 
     /**
-     * A database connection as a URL, from Laravel-style DB_* values: the one
-     * string most tools (psql, TablePlus, DBeaver, a DATABASE_URL) accept.
-     * Null when there is no network database to point at (SQLite, or nothing).
+     * What a client needs to connect to the database an application uses, from its DB_* values: the parts, and the same as one URL.
+     * Null for SQLite, a file with no address, or when there is nothing to connect to. A database on the server itself (loopback)
+     * has no TLS; a remote one is asked for it.
      *
      * @param  array<string, string>  $v
+     * @return array{engine: string, host: string, port: string, database: string, username: string, password: string, local: bool, url: string}|null
      */
-    public static function connectionUrl(#[SensitiveParameter] array $v): ?string
+    public static function connectionDetails(#[SensitiveParameter] array $v): ?array
     {
         $engine = match (strtolower((string) ($v['DB_CONNECTION'] ?? ''))) {
             'pgsql', 'postgres', 'postgresql' => 'postgresql',
@@ -498,15 +502,28 @@ final class Sites
             return null;
         }
         $port = (string) (($v['DB_PORT'] ?? '') !== '' ? $v['DB_PORT'] : ($engine === 'mysql' ? '3306' : '5432'));
-        $auth = rawurlencode((string) ($v['DB_USERNAME'] ?? ''));
-        if (($v['DB_PASSWORD'] ?? '') !== '') {
-            $auth .= ':'.rawurlencode((string) $v['DB_PASSWORD']);
+        $username = (string) ($v['DB_USERNAME'] ?? '');
+        $password = (string) ($v['DB_PASSWORD'] ?? '');
+        $database = (string) ($v['DB_DATABASE'] ?? '');
+        $local = in_array($host, ['127.0.0.1', 'localhost', '::1'], true);
+        $auth = rawurlencode($username);
+        if ($password !== '') {
+            $auth .= ':'.rawurlencode($password);
         }
-        $query = $engine === 'postgresql'
-            ? '?sslmode='.rawurlencode((string) (($v['DB_SSLMODE'] ?? '') !== '' ? $v['DB_SSLMODE'] : 'require'))
-            : '?ssl-mode=REQUIRED';
+        $query = match (true) {
+            $engine === 'postgresql' => '?sslmode='.rawurlencode($local ? 'disable' : (string) (($v['DB_SSLMODE'] ?? '') !== '' ? $v['DB_SSLMODE'] : 'require')),
+            $local => '',
+            default => '?ssl-mode=REQUIRED',
+        };
 
-        return "{$engine}://".($auth !== '' ? "{$auth}@" : '')."{$host}:{$port}/".rawurlencode((string) ($v['DB_DATABASE'] ?? '')).$query;
+        return ['engine' => $engine, 'host' => $host, 'port' => $port, 'database' => $database, 'username' => $username, 'password' => $password, 'local' => $local,
+            'url' => "{$engine}://".($auth !== '' ? "{$auth}@" : '')."{$host}:{$port}/".rawurlencode($database).$query];
+    }
+
+    /** The connection as one URL, or null when there is nothing to connect to. See connectionDetails(). */
+    public static function connectionUrl(#[SensitiveParameter] array $v): ?string
+    {
+        return self::connectionDetails($v)['url'] ?? null;
     }
 
     /**
@@ -1445,15 +1462,65 @@ final class Sites
     }
 
     /**
-     * What is set, without the secrets: each type with the hosts it is for, to show once the credentials are saved.
+     * What is set, without the secrets: each host with its type and, for a username and password, the username.
      *
-     * @return list<string>
+     * @return list<array{type: string, host: string, username: string}>
      */
     public function composerAuthSummary(stdClass $site): array
     {
+        $auth = $this->ownComposerAuth($site);
+        $out = [];
+        foreach ($auth as $type => $hosts) {
+            foreach ((array) $hosts as $host => $login) {
+                $out[] = ['type' => (string) $type, 'host' => (string) $host, 'username' => is_array($login) ? (string) ($login['username'] ?? '') : ''];
+            }
+        }
+
+        return $out;
+    }
+
+    /** @return array<string, array<string, mixed>> the application's own auth.json */
+    private function ownComposerAuth(stdClass $site): array
+    {
         $auth = json_decode((string) $this->vault->get($site->organization_id, self::composerAuthSecret(self::home($site), $site->name)), true);
 
-        return is_array($auth) ? array_map(fn ($type) => $type.': '.implode(', ', array_keys((array) $auth[$type])), array_keys($auth)) : [];
+        return is_array($auth) ? $auth : [];
+    }
+
+    /** What the form can set: a username and password, or one token, for a host. */
+    public const COMPOSER_FORM_TYPES = ['http-basic', 'github-oauth', 'gitlab-token', 'bearer'];
+
+    /**
+     * Adds or replaces the credentials for one host of the application, keeping every other host as it is.
+     *
+     * @throws InvalidArgumentException when the type, host or secret is not usable
+     */
+    public function setComposerHost(stdClass $site, string $type, string $host, string $username, #[SensitiveParameter] string $secret): void
+    {
+        $host = strtolower(trim($host));
+        if (! in_array($type, self::COMPOSER_FORM_TYPES, true)) {
+            throw new InvalidArgumentException('Choose a type of credential.');
+        }
+        if (! preg_match('/^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$/', $host)) {
+            throw new InvalidArgumentException('The host is a name such as nova.laravel.com, without https:// or a path.');
+        }
+        if ($secret === '' || strlen($secret) > 300 || ($type === 'http-basic' && (trim($username) === '' || strlen($username) > 300))) {
+            throw new InvalidArgumentException($type === 'http-basic' ? 'Give both the username and the password (the licence key, for most package servers).' : 'Give the token.');
+        }
+        $auth = $this->ownComposerAuth($site);
+        $auth[$type][$host] = $type === 'http-basic' ? ['username' => trim($username), 'password' => $secret] : $secret;
+        $this->setComposerAuth($site, json_encode($auth, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+    }
+
+    /** Forgets the application's credentials for one host, keeping the others. */
+    public function removeComposerHost(stdClass $site, string $type, string $host): void
+    {
+        $auth = $this->ownComposerAuth($site);
+        unset($auth[$type][$host]);
+        if (($auth[$type] ?? null) === []) {
+            unset($auth[$type]);
+        }
+        $this->setComposerAuth($site, $auth === [] ? '' : json_encode($auth, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
     }
 
     /**
@@ -2103,12 +2170,12 @@ final class Sites
         return $site->home_node_id ?? $site->node_id;
     }
 
-    /** The PHP branch the site runs on, falling back to the platform default. */
+    /** The PHP branch the site runs on, falling back to the default of its server. */
     public static function phpVersion(stdClass $site): string
     {
         $version = (string) ($site->php_version ?? '');
 
-        return ServerStack::supportsPhp($version) ? $version : ServerStack::PHP_VERSION;
+        return ServerStack::supportsPhp($version) ? $version : ServerStack::defaultPhpFor(self::home($site));
     }
 
     /** Where supervisor writes a site's process logs: owned by root, with nothing the application can write above it. */

@@ -12,18 +12,25 @@ const { send, lookup, ask, error } = useSiteSettings(() => props.site.id);
 
 const note = ref('');
 const connectionUrl = ref('');
+const connectionDetails = ref(null);
 const connectionFor = ref('');
 const cloneShown = ref(null);
 const cloneName = ref('');
 const cloneSchemaOnly = ref(false);
 const cloneSql = ref(props.data.cloneSql);
 const cluster = ref(0);
+const existing = ref(false);
+const bucketForm = ref({ endpoint: '', bucket: '', region: '', access_key: '', secret_key: '', url: '' });
+function useBucket() {
+    send('storage/existing', bucketForm.value, { onSuccess: () => { bucketForm.value.secret_key = ''; existing.value = false; } });
+}
 
 /** Fetches the connection URL, shows it, and puts it on the clipboard when the browser allows. */
 async function copyConnection(clone = 0) {
     const { ok, data } = await lookup('database/connection', { clone });
     if (!ok) return;
     connectionUrl.value = data.url;
+    connectionDetails.value = data.details ?? null;
     connectionFor.value = clone > 0 ? `clone-${clone}` : 'site';
     try {
         await navigator.clipboard.writeText(data.url);
@@ -34,6 +41,7 @@ async function copyConnection(clone = 0) {
 }
 function hideConnection() {
     connectionUrl.value = '';
+    connectionDetails.value = null;
     connectionFor.value = '';
 }
 async function showClone(id) {
@@ -65,6 +73,11 @@ async function disconnect() {
 async function moveUploads() {
     if (await ask({ title: 'Move uploads to Spaces?', message: `Give ${props.site.name} its own private Spaces bucket and make it the default disk? Spaces costs $5 a month per account for the first 250 GB. Files already uploaded are not copied, and the app needs league/flysystem-aws-s3-v3.`, ok: 'Move uploads' })) {
         send('storage');
+    }
+}
+async function removeUploads() {
+    if (await ask({ title: 'Delete the bucket?', message: `Delete ${props.site.name}'s Spaces bucket and every file in it? The files cannot be recovered. The app goes back to its server's disk after the next deploy, and files that were only in the bucket will be missing.`, ok: 'Delete bucket and files', tone: 'danger' })) {
+        send('storage/remove');
     }
 }
 function backUp() {
@@ -100,19 +113,31 @@ async function attach() {
       <div class="flex justify-between gap-3 flex-wrap items-center">
         <span>Data lives in: <b :class="data.database.managed ? 'text-accent' : 'font-semibold text-ink-strong'">{{ data.database.label }}</b></span>
         <span class="flex flex-wrap gap-1.5">
-          <Btn small v-if="['managed', 'external'].includes(data.database.kind)" title="Copy the database as one connection URL for psql, TablePlus and the like. It contains the password, so it is audited." @click="copyConnection(0)">Copy connection string</Btn>
+          <Btn small v-if="['managed', 'external', 'local'].includes(data.database.kind)" title="Show the host, port, database, user and password, and copy them as one connection URL for psql, TablePlus and the like. It contains the password, so it is audited." @click="copyConnection(0)">Show connection details</Btn>
           <Btn small danger v-if="data.database.managed" @click="disconnect">Disconnect database</Btn>
         </span>
       </div>
       <FormError :message="error('database')" />
-      <div v-if="connectionUrl !== ''" class="flex flex-col gap-1.5">
-        <label class="font-mono text-[10px] tracking-[0.18em] text-muted uppercase" for="conn-url">Connection string {{ connectionFor === 'site' ? '' : '(the copy)' }}</label>
+      <div v-if="connectionUrl !== ''" class="flex flex-col gap-2">
+        <span class="font-mono text-[10px] tracking-[0.18em] text-muted uppercase">Connection {{ connectionFor === 'site' ? '' : '(the copy)' }}</span>
+        <dl v-if="connectionDetails" class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 m-0 items-center text-[13px]">
+          <template v-for="[label, key] in [['Engine', 'engine'], ['Host', 'host'], ['Port', 'port'], ['Database', 'database'], ['Username', 'username'], ['Password', 'password']]" :key="key">
+            <dt class="text-faint">{{ label }}</dt>
+            <dd class="m-0"><input class="font-mono w-full" readonly :aria-label="label" :value="connectionDetails[key]" @focus="$event.target.select()"></dd>
+          </template>
+        </dl>
+        <label class="font-mono text-[10px] tracking-[0.18em] text-muted uppercase" for="conn-url">Connection string</label>
         <input id="conn-url" class="font-mono w-full" readonly :value="connectionUrl" @focus="$event.target.select()">
+        <span v-if="connectionDetails?.local" class="text-faint text-[13px]">This database is on the server itself and listens on {{ connectionDetails.host }} only, so it is reached from that server, or from your computer through an SSH tunnel: <code>ssh -L {{ connectionDetails.port }}:127.0.0.1:{{ connectionDetails.port }} user@server</code>.</span>
         <div class="flex flex-wrap gap-2"><Btn small @click="hideConnection">Hide</Btn><span class="text-faint text-[13px] self-center">It contains the password. Revealing it is recorded in the audit log.</span></div>
       </div>
       <span v-if="data.database.managed" class="text-faint text-[13px]">Disconnecting keeps the database and its data. Nothing is copied or dropped; the connection in the app's .env keeps working. Edit the variables or attach another cluster to move it.</span>
       <span>Cache, sessions and queue: <b class="font-semibold text-ink-strong">{{ data.cache }}</b></span>
-      <span v-if="data.bucket">Uploads: <b class="text-accent">Spaces bucket {{ data.bucket }}</b> <span class="text-faint text-[13px]">· private · the default disk</span></span>
+      <span v-if="data.bucket">Uploads: <b class="text-accent">{{ data.bucketExisting ? 'Bucket' : 'Spaces bucket' }} {{ data.bucket }}</b> <span class="text-faint text-[13px]">· <template v-if="data.bucketExisting">yours already; never changed or deleted here · </template><template v-else>private · </template>the default disk</span></span>
+      <div v-if="data.bucket && !data.bucketExisting" class="flex justify-between gap-3 flex-wrap items-center">
+        <span class="text-faint text-[13px]">Deleting the bucket erases every upload in it and stops its billing. New uploads go to the server's disk again.</span>
+        <Btn small danger @click="removeUploads">Delete bucket</Btn>
+      </div>
       <template v-else>
         <div class="flex justify-between gap-3 flex-wrap items-center">
           <span>Uploads: <b class="font-semibold text-ink-strong">the disk of each server</b></span>
@@ -120,6 +145,22 @@ async function attach() {
         </div>
         <span v-if="error('storage')" class="text-[13px] text-failed">{{ error('storage') }}</span>
         <span class="text-faint text-[13px]">The app needs <code>league/flysystem-aws-s3-v3</code> for Laravel's s3 disk.</span>
+        <div class="flex flex-col gap-2">
+          <div class="flex justify-between gap-3 flex-wrap items-center">
+            <span class="text-muted">Or use a bucket you already have, at any S3-compatible service.</span>
+            <Btn small @click="existing = !existing">{{ existing ? 'Cancel' : 'Use an existing bucket' }}</Btn>
+          </div>
+          <form v-if="existing" class="flex flex-col gap-2" @submit.prevent="useBucket">
+            <Field label="Endpoint" v-slot="{ id }"><input :id="id" v-model="bucketForm.endpoint" placeholder="https://nyc3.digitaloceanspaces.com" autocomplete="off"></Field>
+            <Field label="Bucket" v-slot="{ id }"><input :id="id" v-model="bucketForm.bucket" placeholder="my-uploads" autocomplete="off"></Field>
+            <Field label="Region (optional)" v-slot="{ id }"><input :id="id" v-model="bucketForm.region" placeholder="us-east-1" autocomplete="off"></Field>
+            <Field label="Access key" v-slot="{ id }"><input :id="id" v-model="bucketForm.access_key" autocomplete="off"></Field>
+            <Field label="Secret key" v-slot="{ id }"><input :id="id" v-model="bucketForm.secret_key" type="password" autocomplete="off"></Field>
+            <Field label="Public address (optional)" v-slot="{ id }"><input :id="id" v-model="bucketForm.url" placeholder="https://cdn.example.com" autocomplete="off"></Field>
+            <div><Btn type="submit" small primary>Check and use it</Btn></div>
+            <span class="text-faint text-[13px]">Unharbored tries the key with one read-only request. It never creates, writes to or deletes anything in the bucket, and deleting the application leaves it alone. The key is kept in the vault and written to the app's .env.</span>
+          </form>
+        </div>
       </template>
       <div class="flex flex-col gap-2">
         <div class="flex justify-between gap-3 flex-wrap items-center">

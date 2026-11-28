@@ -5,13 +5,19 @@ declare(strict_types=1);
 namespace App\Http\Controllers;
 
 use App\Lib\Agent\AgentRelease;
+use App\Lib\Audit\Actor;
 use App\Lib\Auth\Org;
 use App\Lib\Console\Consoles;
 use App\Lib\Operations\OperationRunner;
+use App\Lib\Providers\Incus\IncusHost;
+use App\Lib\Providers\Incus\IncusProvider;
+use App\Lib\Providers\Incus\Ingress;
 use App\Lib\Servers\NodeRemoval;
+use App\Lib\Servers\ServerArchiving;
 use App\Lib\Servers\ServerInstall;
 use App\Lib\Servers\ServersPage;
 use App\Lib\Servers\ServerStack;
+use App\Lib\Servers\Underneath;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -38,6 +44,7 @@ final class ServersController extends Controller
             'serving' => app(AgentRelease::class)->version(),
             'accountNote' => $page->accountNote(),
             'servers' => fn () => $page->rows($connected),
+            'archived' => fn () => $page->rows($connected, archived: true),
             'pools' => fn () => $page->pools(),
             'provisioning' => fn () => $page->provisioning(),
             'disconnected' => fn () => $page->disconnected(),
@@ -60,9 +67,10 @@ final class ServersController extends Controller
             'tab' => in_array($request->query('tab'), self::TABS, true) ? (string) $request->query('tab') : 'overview',
             'chart' => $chart,
             'gatewayUp' => $gatewayUp,
-            'phpVersions' => ServerStack::PHP_VERSIONS,
+            'phpVersions' => ServerStack::phpVersionsFor($node),
             'consoles' => ['enabled' => Consoles::enabled(Org::id()), 'socketUrl' => Consoles::socketUrl()],
             'node' => fn () => $page->nodes($chart, $connected, $node)[0],
+            'underneath' => fn () => Underneath::of($node),
             'commands' => fn () => $page->commands($node),
         ]);
     }
@@ -91,10 +99,10 @@ final class ServersController extends Controller
             'name' => ['required', 'regex:/^[a-z0-9][a-z0-9-]{0,30}$/'],
             'region' => 'required|string', 'size' => 'required|string',
             'keys' => 'array', 'keys.*' => 'integer', 'chosen' => 'boolean', 'provider' => 'nullable|string',
-            'role' => 'nullable|in:'.\App\Lib\Providers\Incus\IncusHost::ROLE,
+            'role' => 'nullable|in:'.IncusHost::ROLE,
         ]);
         $name = $data['name'];
-        if ($name === \App\Lib\Providers\Incus\Ingress::SLUG) {
+        if ($name === Ingress::SLUG) {
             throw ValidationException::withMessages(['name' => 'That name is kept for the IPv4 ingress on an Incus host. Pick another.']);
         }
         $provider = $data['provider'] ?? 'digitalocean';
@@ -112,11 +120,11 @@ final class ServersController extends Controller
         $chosen = (bool) ($data['chosen'] ?? false);
         $role = $data['role'] ?? null;
         if ($role !== null) {
-            if ($provider === \App\Lib\Providers\Incus\IncusProvider::PROVIDER) {
+            if ($provider === IncusProvider::PROVIDER) {
                 throw ValidationException::withMessages(['name' => 'An Incus host is a machine of its own: pick another provider.']);
             }
             try {
-                app(\App\Lib\Providers\Incus\IncusHost::class)->assertCanAdd(Org::id());
+                app(IncusHost::class)->assertCanAdd(Org::id());
             } catch (\InvalidArgumentException $e) {
                 throw ValidationException::withMessages(['name' => $e->getMessage()]);
             }
@@ -157,6 +165,29 @@ final class ServersController extends Controller
             .($r['droplet'] ? " Droplet {$r['droplet']} still exists and is still billed; destroy it in DigitalOcean when you are done with it." : ''));
     }
 
+    /** Stops managing a server and its applications; the machine, its provider and its agent are not touched. */
+    public function archive(Request $request, string $node): RedirectResponse
+    {
+        Gate::authorize('infrastructure');
+        $this->mine($node);
+        try {
+            app(ServerArchiving::class)->archiveServer(Org::id(), $node, Actor::user((string) $request->user()->id, (string) $request->user()->email));
+        } catch (\InvalidArgumentException $e) {
+            throw ValidationException::withMessages(['archive' => $e->getMessage()]);
+        }
+
+        return back()->with('status', 'Archived. It keeps running; Unharbored no longer manages it.');
+    }
+
+    public function restore(Request $request, string $node): RedirectResponse
+    {
+        Gate::authorize('infrastructure');
+        $this->mine($node);
+        app(ServerArchiving::class)->restoreServer(Org::id(), $node, Actor::user((string) $request->user()->id, (string) $request->user()->email));
+
+        return back()->with('status', 'Restored. Unharbored manages it again.');
+    }
+
     /** Clears a node record whose Droplet is already gone at the provider. */
     public function removeStale(Request $request, string $node): RedirectResponse
     {
@@ -169,6 +200,25 @@ final class ServersController extends Controller
         }
 
         return redirect()->route('servers')->with('status', "Removed stale entry {$node}.");
+    }
+
+    /** Deletes the server and everything under it, as chosen on the review step; the server's name must be typed. */
+    public function delete(Request $request, string $node): SymfonyResponse
+    {
+        Gate::authorize('infrastructure');
+        $this->mine($node);
+        $data = $request->validate(['confirm' => 'required|string', 'choices' => 'array', 'choices.*' => 'string']);
+        $name = strstr($node, '.', true) ?: $node;
+        if ($data['confirm'] !== $name) {
+            throw ValidationException::withMessages(['delete' => "Type {$name} exactly to confirm."]);
+        }
+        try {
+            $id = app(OperationRunner::class)->queueServerDelete($node, $data['choices'] ?? [], 'console', (string) $request->user()->email);
+        } catch (\InvalidArgumentException $e) {
+            throw ValidationException::withMessages(['delete' => $e->getMessage()]);
+        }
+
+        return $this->toOperation($id);
     }
 
     public function destroy(Request $request, string $node): SymfonyResponse

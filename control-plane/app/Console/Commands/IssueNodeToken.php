@@ -57,7 +57,7 @@ final class IssueNodeToken extends Command
         $caPath = $out.'/ca.crt';
         $tokenPath = $out.'/enroll.token';
 
-        file_put_contents($caPath, $ca->certificatePem());
+        file_put_contents($caPath, $enrollment->serverTrustFor($organizationId));
         file_put_contents($tokenPath, $token);
         @chmod($tokenPath, 0o600);
 
@@ -73,7 +73,7 @@ final class IssueNodeToken extends Command
             "        -enroll-url https://%s/api/enroll \\\n".
             "        -server-name %s \\\n".
             "        -ca-file %s \\\n".
-            "        -token-file %s",
+            '        -token-file %s',
             config('control_plane.server_name'),
             config('control_plane.server_name'),
             $caPath,
