@@ -143,9 +143,11 @@ final class Ingress
             }
         }
         foreach (DB::table('service_endpoints')->join('services', 'services.id', '=', 'service_endpoints.service_id')->where('services.organization_id', $organizationId)
-            ->whereIn('service_endpoints.node_id', array_keys($addresses))->orderBy('service_endpoints.domain')->get(['service_endpoints.domain', 'service_endpoints.node_id']) as $endpoint) {
-            if (preg_match('/^[a-z0-9.-]+$/', (string) $endpoint->domain)) {
-                $routes[(string) $endpoint->domain] = $addresses[$endpoint->node_id];
+            ->whereIn('service_endpoints.node_id', array_keys($addresses))->orderBy('service_endpoints.domain')->get(['service_endpoints.domain', 'service_endpoints.aliases', 'service_endpoints.node_id']) as $endpoint) {
+            foreach ([$endpoint->domain, ...array_filter(explode(',', (string) $endpoint->aliases))] as $name) {
+                if (preg_match('/^[a-z0-9.-]+$/', (string) $name)) {
+                    $routes[(string) $name] = $addresses[$endpoint->node_id];
+                }
             }
         }
 

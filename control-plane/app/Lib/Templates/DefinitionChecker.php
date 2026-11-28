@@ -148,7 +148,7 @@ final class DefinitionChecker
 
                 continue;
             }
-            $this->unknown($p, $in, ['key', 'type', 'label', 'default', 'options', 'help', 'generate']);
+            $this->unknown($p, $in, ['key', 'type', 'label', 'default', 'options', 'help', 'generate', 'multiple']);
             $key = $this->key("$p.key", $in['key'] ?? null);
             $type = $in['type'] ?? null;
             if (! in_array($type, Definition::INPUT_TYPES, true)) {
@@ -170,6 +170,13 @@ final class DefinitionChecker
                 }
             } elseif (array_key_exists('options', $in)) {
                 $this->error("$p.options", 'only a choice input has options');
+            }
+            if (array_key_exists('multiple', $in)) {
+                if ($type !== 'domain' || $in['multiple'] !== true) {
+                    $this->error("$p.multiple", 'only a domain input can have multiple: true');
+                } else {
+                    $norm['multiple'] = true;
+                }
             }
             if (array_key_exists('generate', $in)) {
                 if ($type !== 'domain' || $in['generate'] !== 'sslip') {

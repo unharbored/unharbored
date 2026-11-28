@@ -13,4 +13,14 @@ namespace App\Lib\DigitalOcean\Exceptions;
  */
 final class AuthenticationFailed extends DigitalOceanException
 {
+    /** $status is DigitalOcean's: 401 when it does not know the token, 403 when it does but the token may not do this. */
+    public function __construct(string $message = '', public readonly int $status = 401)
+    {
+        parent::__construct($message);
+    }
+
+    public function missingPermission(): bool
+    {
+        return $this->status === 403;
+    }
 }

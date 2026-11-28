@@ -180,13 +180,15 @@ final class Catalogue
     {
         $out = [];
         foreach ($endpoints as $e) {
-            if (str_ends_with($e['domain'], '.sslip.io')) {
-                continue;
+            foreach ([$e['domain'], ...($e['aliases'] ?? [])] as $domain) {
+                if (str_ends_with($domain, '.sslip.io')) {
+                    continue;
+                }
+                if ($ingress !== null) {
+                    $out[] = ['domain' => $domain, 'type' => 'A', 'value' => $ingress];
+                }
+                $out[] = ['domain' => $domain, 'type' => filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) ? 'AAAA' : 'A', 'value' => $ip];
             }
-            if ($ingress !== null) {
-                $out[] = ['domain' => $e['domain'], 'type' => 'A', 'value' => $ingress];
-            }
-            $out[] = ['domain' => $e['domain'], 'type' => filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) ? 'AAAA' : 'A', 'value' => $ip];
         }
 
         return $out;
@@ -214,7 +216,8 @@ final class Catalogue
         $ip = self::serverIp($organizationId, $a['node']->node_id);
         $endpoints = [];
         foreach ($a['context']['ports'] as $port => $domain) {
-            $endpoints[] = ['port' => (int) $port, 'domain' => $domain];
+            $names = Definition::domains((string) $domain);
+            $endpoints[] = ['port' => (int) $port, 'domain' => $names[0], 'aliases' => array_slice($names, 1)];
         }
         $label = $entry?->label;
         $warning = match ($entry?->tier) {

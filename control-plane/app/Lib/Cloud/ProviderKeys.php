@@ -111,16 +111,20 @@ final class ProviderKeys
     /** @return list<array<string, mixed>> */
     public function dnsList(string $organizationId): array
     {
-        $domain = $this->dns->domain($organizationId);
-        if ($domain === null) {
+        $domains = $this->dns->domains($organizationId);
+        if ($domains === []) {
             return [];
         }
         $row = DB::table('dns_credentials')->where('organization_id', $organizationId)->where('provider', 'spaceship')->first();
 
         return [[
-            'provider' => 'spaceship', 'name' => 'Spaceship', 'kind' => 'DNS key and secret', 'hint' => $row->key_hint ?? null, 'domains' => [$domain],
+            'provider' => 'spaceship', 'name' => 'Spaceship', 'kind' => 'DNS key and secret', 'hint' => $row->key_hint ?? null, 'domains' => $domains,
             'verified_at' => $row->verified_at ?? null, 'expires_at' => $row->expires_at ?? null, 'error' => $row->last_error ?? null,
-            'uses' => DB::table('sites')->where('organization_id', $organizationId)->where('domain', 'like', '%.'.$domain)->count(),
+            'uses' => DB::table('sites')->where('organization_id', $organizationId)->where(function ($q) use ($domains) {
+                foreach ($domains as $domain) {
+                    $q->orWhere('domain', 'like', '%.'.$domain);
+                }
+            })->count(),
         ] + self::standing($row->expires_at ?? null, $row->last_error ?? null)];
     }
 
@@ -131,8 +135,10 @@ final class ProviderKeys
         $expiry = self::date($expiresAt);
         try {
             $account = (new Client(token: $token, accountKey: 'org:'.$organizationId, http: $this->http, rateLimiter: new RateLimiter($this->cache), baseUrl: config('services.digitalocean.api_url')))->get('account')['account'] ?? [];
-        } catch (AuthenticationFailed) {
-            throw new InvalidArgumentException('DigitalOcean refused that token. Nothing was changed.');
+        } catch (AuthenticationFailed $e) {
+            throw new InvalidArgumentException($e->missingPermission()
+                ? 'DigitalOcean accepts that token, but it does not have enough permissions. Create it again with Full Access, or with custom scopes that include read on Account and read and write on everything else Unharbored manages. Nothing was changed.'
+                : 'DigitalOcean does not recognise that token. Check it was copied whole, and that it has not expired or been revoked. Nothing was changed.');
         } catch (Throwable $e) {
             throw new InvalidArgumentException('Could not check the token with DigitalOcean: '.mb_substr($e->getMessage(), 0, 160).' Nothing was changed.');
         }
@@ -154,6 +160,17 @@ final class ProviderKeys
             ['key_hint' => self::hint($key), 'expires_at' => $expiry, 'verified_at' => now(), 'last_error' => null, 'updated_at' => now(), 'created_at' => now()]);
     }
 
+    /** Changes the domains the saved DNS key is used for, checking each with Spaceship first. Nothing changes if any is refused. */
+    public function setDnsDomains(string $organizationId, string $domains): void
+    {
+        try {
+            $this->dns->setDomains($organizationId, $domains);
+        } catch (Throwable $e) {
+            throw new InvalidArgumentException(mb_substr($e->getMessage(), 0, 240).' Nothing was changed.');
+        }
+        DB::table('dns_credentials')->where('organization_id', $organizationId)->where('provider', 'spaceship')->update(['verified_at' => now(), 'last_error' => null, 'updated_at' => now()]);
+    }
+
     public function setExpiry(string $organizationId, string $kind, ?string $expiresAt, Actor $actor): void
     {
         $expiry = self::date($expiresAt);
@@ -172,7 +189,9 @@ final class ProviderKeys
             return $this->cloud->has($organizationId) && $this->cloud->verify($organizationId, $actor);
         }
         try {
-            $this->dns->records($organizationId);
+            foreach ($this->dns->domains($organizationId) as $domain) {
+                $this->dns->records($organizationId, $domain);
+            }
             $error = null;
         } catch (Throwable $e) {
             $error = mb_substr($e->getMessage(), 0, 300);
@@ -191,7 +210,7 @@ final class ProviderKeys
         }
         $uses = $this->cloud($organizationId)[0]['uses'] ?? 0;
 
-        return $uses > 0 ? "{$uses} server".($uses === 1 ? '' : 's, databases or buckets')." need this key to be managed. Remove them first." : null;
+        return $uses > 0 ? "{$uses} server".($uses === 1 ? '' : 's, databases or buckets').' need this key to be managed. Remove them first.' : null;
     }
 
     public function disconnect(string $organizationId, string $kind, Actor $actor): void

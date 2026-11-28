@@ -15,7 +15,7 @@ source: https://hub.docker.com/r/louislam/uptime-kuma
 
 inputs:
   - { key: name, type: slug,   label: Name, help: "A short name for this service on the server, for example files. Lowercase letters, digits and dashes." }
-  - { key: host, type: domain, label: Web address, help: "The address you will open it at. Point a DNS A record for it at this server first." }
+  - { key: host, type: domain, multiple: true, label: Web address, help: "The address you will open it at. Add more names separated by commas, and they all open the same service. Point a DNS A record for each at this server first." }
 
 runs:
   image: louislam/uptime-kuma:2.5.11@sha256:7554dba313c84e44fee921ef3b5626ba1c711e412e82815e8c957517026112a9

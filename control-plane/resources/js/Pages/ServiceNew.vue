@@ -154,7 +154,7 @@ async function create() {
         <ul class="m-0 flex list-disc flex-col gap-1.5 pl-5">
           <li v-if="review.newServer">{{ review.server }}, set up first and billed by its provider until you destroy it. Free names are made from its address once it exists.</li>
           <li>A service called <b>{{ review.service }}</b>, started and kept running by the server's service manager.</li>
-          <li v-for="e in review.endpoints ?? []" :key="e.domain">Address <b>https://{{ e.domain }}</b> (port {{ e.port }} on the server, behind the web server) with its own certificate.</li>
+          <li v-for="e in review.endpoints ?? []" :key="e.domain">Address <b>https://{{ [e.domain, ...(e.aliases ?? [])].join(', https://') }}</b> (port {{ e.port }} on the server, behind the web server) with {{ (e.aliases ?? []).length ? 'one certificate for all of them' : 'its own certificate' }}.</li>
           <li v-if="(review.secrets ?? []).length > 0">Generated credentials ({{ review.secrets.join(', ') }}), kept in the vault. You can reveal them on the service page; each reveal is recorded.</li>
           <template v-if="review.container">
             <li>Runs as the container <b>cm-svc-{{ review.service }}</b> from the image <span class="font-mono text-[13px]">{{ review.container.image }}</span>, pinned by digest <span class="font-mono text-[13px]">{{ review.container.digest }}</span> (checked after the pull).</li>

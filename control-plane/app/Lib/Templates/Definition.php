@@ -213,6 +213,15 @@ final class Definition
         return $runs;
     }
 
+    /** The most names one domain input may hold: one certificate covers them all, and Let's Encrypt allows 100. */
+    public const MAX_DOMAINS = 100;
+
+    /** The names in a domain input's value (one, or several separated by commas or spaces); the first is the primary. @return list<string> */
+    public static function domains(string $value): array
+    {
+        return array_values(array_filter(preg_split('/[\s,]+/', $value) ?: [], fn ($n) => $n !== ''));
+    }
+
     /**
      * Check one value against an input's type and return it in the form it is
      * rendered in. Throws with a message a person can read.
@@ -235,12 +244,17 @@ final class Definition
 
                 return $v;
             case 'domain':
-                $v = strtolower($v);
-                if (! self::isHostname($v)) {
-                    throw new InvalidArgumentException('must be a domain name such as files.example.com');
+                $names = ($input['multiple'] ?? false) === true ? self::domains(strtolower($v)) : [strtolower($v)];
+                if ($names === [] || count($names) > self::MAX_DOMAINS) {
+                    throw new InvalidArgumentException('must be a domain name such as files.example.com'.(($input['multiple'] ?? false) === true ? ', or up to '.self::MAX_DOMAINS.' separated by commas' : ''));
+                }
+                foreach ($names as $name) {
+                    if (! self::isHostname($name)) {
+                        throw new InvalidArgumentException('must be a domain name such as files.example.com');
+                    }
                 }
 
-                return $v;
+                return implode(',', array_values(array_unique($names)));
             case 'size':
                 if (self::parseSize($v) === null) {
                     throw new InvalidArgumentException('must be a size such as 512MB or 50GB');

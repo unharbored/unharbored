@@ -61,12 +61,17 @@ async function disconnect(url, name, what = 'The key is deleted from the vault.'
             <Form :action="`/account/providers/${panel.kind}`" method="post" class="flex flex-col gap-2.5">
               <Field v-if="panel.kind === 'cloud'" label="New API token" v-slot="{ id }"><input :id="id" name="token" type="password" autocomplete="off" required></Field>
               <template v-else>
-                <Field label="Domain" v-slot="{ id }"><input :id="id" name="domain" :value="k.domains[0] ?? ''" required></Field>
+                <Field label="Domains" hint="One or more, separated by commas." v-slot="{ id }"><input :id="id" name="domain" :value="k.domains.join(', ')" required></Field>
                 <FormRow><Field label="API key" v-slot="{ id }"><input :id="id" name="key" type="password" autocomplete="off" required></Field><Field label="API secret" v-slot="{ id }"><input :id="id" name="secret" type="password" autocomplete="off" required></Field></FormRow>
               </template>
               <Field label="Expires on "><template #label><span class="text-faint">(optional)</span></template><template #default="{ id }"><input :id="id" name="expires_at" type="date" :value="k.expires_at"></template></Field>
               <span class="text-faint text-[13px]">The old key keeps working until the new one is checked with {{ k.name }}.</span>
               <div class="flex flex-wrap gap-2"><Btn small primary type="submit">Verify and save</Btn></div>
+            </Form>
+          </Disclosure>
+          <Disclosure v-if="panel.kind === 'dns'" small title="Change the domains this key is used for; it is checked with the saved key" label="Edit domains…">
+            <Form action="/account/providers/dns/domains" method="post" class="flex flex-wrap items-end gap-3">
+              <Field label="Domains" hint="One or more, separated by commas. Each is checked with the saved key." v-slot="{ id }"><input :id="id" name="domains" :value="k.domains.join(', ')" required></Field><Btn small primary type="submit">Verify and save</Btn>
             </Form>
           </Disclosure>
           <Disclosure small title="The date you chose when you created the key; the provider does not report it" label="Change expiry…">
@@ -82,9 +87,9 @@ async function disconnect(url, name, what = 'The key is deleted from the vault.'
         <p class="m-0 text-[13px] text-faint"><template v-if="panel.kind === 'cloud'">No cloud provider connected. Nothing can be created until one is.</template><template v-else>None connected. Unharbored shows the records to add at your registrar instead.</template></p>
         <Disclosure small primary :label="panel.kind === 'cloud' ? 'Connect DigitalOcean…' : 'Connect Spaceship…'">
           <Form :action="`/account/providers/${panel.kind}`" method="post" class="flex flex-col gap-2.5">
-            <Field v-if="panel.kind === 'cloud'" label="API token" hint="Needs read and write. Only its first characters and last four are shown again." v-slot="{ id }"><input :id="id" name="token" type="password" autocomplete="off" placeholder="dop_v1_…" required></Field>
+            <Field v-if="panel.kind === 'cloud'" label="API token" hint="Create it with Full Access, or custom scopes that include read on Account and read and write on everything else. Only its first characters and last four are shown again." v-slot="{ id }"><input :id="id" name="token" type="password" autocomplete="off" placeholder="dop_v1_…" required></Field>
             <template v-else>
-              <Field label="Domain" v-slot="{ id }"><input :id="id" name="domain" placeholder="example.com" required></Field>
+              <Field label="Domains" hint="One or more, separated by commas." v-slot="{ id }"><input :id="id" name="domain" placeholder="example.com, example.org" required></Field>
               <FormRow><Field label="API key" v-slot="{ id }"><input :id="id" name="key" type="password" autocomplete="off" required></Field><Field label="API secret" v-slot="{ id }"><input :id="id" name="secret" type="password" autocomplete="off" required></Field></FormRow>
               <span class="text-faint text-[13px]">The key needs <span class="font-mono">dnsrecords:read</span> and <span class="font-mono">dnsrecords:write</span> only.</span>
             </template>
@@ -94,7 +99,7 @@ async function disconnect(url, name, what = 'The key is deleted from the vault.'
           </Disclosure>
       </template>
       <span v-if="panel.kind === 'cloud'" class="text-faint text-[13px]">An application, and everything it runs on, stays on one cloud provider.</span>
-      <span v-else class="text-faint text-[13px]">One domain per team for now. Every key is checked daily; you are alerted when one is rejected, expired or within {{ providers.soonDays }} days of its expiry.</span>
+      <span v-else class="text-faint text-[13px]">Every key is checked daily; you are alerted when one is rejected, expired or within {{ providers.soonDays }} days of its expiry.</span>
   </Panel>
 
   <Panel id="provider-aws" title="AWS, or an AWS-compatible service" note="EC2 servers, with local databases. Set an endpoint URL to use LocalStack or another service that speaks the AWS API.">

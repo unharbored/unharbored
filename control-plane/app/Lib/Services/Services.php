@@ -349,7 +349,7 @@ final class Services
                 'data_path' => $s->data_path,
                 'created_at' => $s->created_at,
                 'update' => ($u = $this->updateAvailable($s)) === null ? null : ['version' => $u['version'], 'allowed' => $u['allowed'], 'confirm' => $u['confirm'], 'changes' => $u['changes']],
-                'endpoints' => ($endpoints[$s->id] ?? collect())->map(fn ($e) => ['port' => (int) $e->port, 'domain' => $e->domain, 'tls' => (bool) $e->tls,
+                'endpoints' => ($endpoints[$s->id] ?? collect())->map(fn ($e) => ['port' => (int) $e->port, 'domain' => $e->domain, 'aliases' => array_values(array_filter(explode(',', (string) $e->aliases))), 'tls' => (bool) $e->tls,
                     'listen' => '127.0.0.1:'.$e->port] + ($e->container_port !== null ? ['container_port' => (int) $e->container_port] : []))->values()->all(),
                 'operation' => $active === null ? null : ['id' => (int) $active->id, 'kind' => $active->kind, 'status' => $active->status],
                 'last_operation' => $last === null ? null : ['id' => (int) $last->id, 'kind' => $last->kind, 'status' => $last->status],
@@ -674,22 +674,26 @@ final class Services
     /** A domain belongs to one thing: not an application's, not another service's. */
     public function checkDomains(string $organizationId, Definition $def, array $effective, ?int $exceptServiceId): void
     {
+        $taken = DB::table('service_endpoints')->join('services', 'services.id', '=', 'service_endpoints.service_id')
+            ->where('services.organization_id', $organizationId)
+            ->when($exceptServiceId !== null, fn ($q) => $q->where('services.id', '!=', $exceptServiceId))
+            ->get(['service_endpoints.domain', 'service_endpoints.aliases'])
+            ->flatMap(fn ($e) => [$e->domain, ...array_filter(explode(',', (string) $e->aliases))])->all();
+
         $domains = [];
-        foreach ($def->runs['ports'] as $port => $_) {
-            $input = preg_replace('/^\{\{\s*inputs\.(\w+)\s*\}\}$/', '$1', $def->runs['ports'][$port]);
-            $domain = $effective[$input];
-            if (in_array($domain, $domains, true)) {
-                throw new InvalidArgumentException("{$domain} is used for two addresses of this service; give each its own.");
-            }
-            $domains[] = $domain;
-            if (DB::table('sites')->where('organization_id', $organizationId)->where('domain', $domain)->exists()) {
-                throw new InvalidArgumentException("{$domain} is already the address of an application in this team.");
-            }
-            $taken = DB::table('service_endpoints')->join('services', 'services.id', '=', 'service_endpoints.service_id')
-                ->where('services.organization_id', $organizationId)->where('service_endpoints.domain', $domain)
-                ->when($exceptServiceId !== null, fn ($q) => $q->where('services.id', '!=', $exceptServiceId))->exists();
-            if ($taken) {
-                throw new InvalidArgumentException("{$domain} is already the address of another service in this team.");
+        foreach ($def->runs['ports'] as $placeholder) {
+            $input = preg_replace('/^\{\{\s*inputs\.(\w+)\s*\}\}$/', '$1', $placeholder);
+            foreach (Definition::domains($effective[$input]) as $domain) {
+                if (in_array($domain, $domains, true)) {
+                    throw new InvalidArgumentException("{$domain} is used for two addresses of this service; give each its own.");
+                }
+                $domains[] = $domain;
+                if (DB::table('sites')->where('organization_id', $organizationId)->where('domain', $domain)->exists()) {
+                    throw new InvalidArgumentException("{$domain} is already the address of an application in this team.");
+                }
+                if (in_array($domain, $taken, true)) {
+                    throw new InvalidArgumentException("{$domain} is already the address of another service in this team.");
+                }
             }
         }
     }
@@ -734,7 +738,7 @@ final class Services
                     if ($host === null) {
                         $host = self::lowestFreePort($used, $nodeId);
                         DB::table('service_endpoints')->updateOrInsert(['service_id' => $serviceId, 'port' => $host],
-                            ['node_id' => $nodeId, 'container_port' => $container, 'domain' => $domain, 'tls' => false, 'updated_at' => now(), 'created_at' => now()]);
+                            ['node_id' => $nodeId, 'container_port' => $container, 'domain' => Definition::domains($domain)[0], 'tls' => false, 'updated_at' => now(), 'created_at' => now()]);
                     }
                     $used[(int) $host] = 'this service';
                     $out[(int) $container] = (int) $host;
